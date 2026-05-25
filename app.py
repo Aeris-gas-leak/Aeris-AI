@@ -138,17 +138,31 @@ def generate_fake_data():
     return jsonify({"ok": True, "generated": 15})
 
 # ── Refresh / Trigger API ──────────────────────────────────────────────────────
+def generate_csv():
+    with open(CSV_PATH, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["timestamp", "temperature_C", "humidity_%", "pressure_hPa"])
+        for _ in range(216):
+            writer.writerow([
+                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                round(random.uniform(20.0, 30.0), 2),
+                round(random.uniform(30.0, 70.0), 2),
+                round(random.uniform(990.0, 1025.0), 2),
+            ])
+
 @app.route("/api/trigger/request", methods=["POST"])
 def trigger_request():
+    generate_csv()
+    now = datetime.utcnow().isoformat()
     conn = get_db_connection()
     cur  = conn.cursor()
     cur.execute("""
-        UPDATE trigger_flags SET status='pending', requested_at=?, completed_at=NULL WHERE id=1;
-    """, (datetime.utcnow().isoformat(),))
+        UPDATE trigger_flags SET status='idle', requested_at=?, completed_at=? WHERE id=1;
+    """, (now, now))
     conn.commit()
     cur.close()
     conn.close()
-    return jsonify({"ok": True, "status": "pending"})
+    return jsonify({"ok": True, "status": "idle"})
 
 @app.route("/api/trigger/poll")
 def trigger_poll():
@@ -184,4 +198,4 @@ def trigger_status():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5001, debug=True)
