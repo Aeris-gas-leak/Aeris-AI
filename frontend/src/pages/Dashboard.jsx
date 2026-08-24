@@ -112,17 +112,24 @@ export default function Dashboard() {
         </div>
         <div className="rooms-grid">
           {[
-            { name: 'Room - A', dots: ['green','green','green'] },
-            { name: 'Room - B', dots: ['green','yellow'] },
-            { name: 'Room - C', dots: ['yellow','green'] },
-            { name: 'Room - D', dots: ['green'] },
+            { name: 'Processing Area C', dots: ['yellow', 'green'] },
+            { name: 'Storage Area B', dots: ['green', 'yellow'] },
+            { name: 'Floor #01', dots: ['green', 'green', 'green'] },
           ].map(room => (
-            <div className="room-mini" key={room.name}>
-              <span>{room.name}</span>
-              <div className="room-dots-field">
+            <Link
+              to={`/room/${encodeURIComponent(room.name)}`}
+              className="room-mini"
+              key={room.name}
+              style={{ textDecoration: 'none', color: 'inherit', transition: 'all 0.2s ease', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                <span style={{ fontWeight: 600, color: 'var(--text)', fontSize: '13px' }}>{room.name}</span>
+                <span style={{ fontSize: '14px', color: 'var(--muted)' }}>→</span>
+              </div>
+              <div className="room-dots-field" style={{ marginTop: 'auto' }}>
                 {room.dots.map((c, i) => <span key={i} className={`dot ${c}`}></span>)}
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       </div>

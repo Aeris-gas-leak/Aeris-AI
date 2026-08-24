@@ -2,7 +2,7 @@ import os
 import csv
 import random
 import sqlite3
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from datetime import datetime
 
@@ -10,7 +10,13 @@ app = Flask(__name__)
 CORS(app)
 
 DATABASE_URL = os.path.join(os.path.dirname(__file__), "readings.db")
-CSV_PATH     = os.path.join(os.path.dirname(__file__), "data.csv")
+CSV_PATH = os.path.join(os.path.dirname(__file__), "data.csv")
+CSV_PATH_FALLBACK = os.path.join(os.path.dirname(__file__), "sensor_data.csv")
+
+def get_csv_path():
+    if os.path.exists(CSV_PATH):
+        return CSV_PATH
+    return CSV_PATH_FALLBACK
 
 # ── Danger thresholds ──────────────────────────────────────────────────────────
 THRESHOLDS = {
@@ -28,9 +34,10 @@ ROOM_SLICES = {
 
 def read_csv():
     rows = []
-    if not os.path.exists(CSV_PATH):
+    csv_path = get_csv_path()
+    if not os.path.exists(csv_path):
         return rows
-    with open(CSV_PATH, newline="") as f:
+    with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
             rows.append({
@@ -195,6 +202,24 @@ def trigger_status():
     cur.close()
     conn.close()
     return jsonify(dict(row))
+
+
+# Serve built frontend if available; fallback to API message
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_frontend(path):
+    dist_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+    # serve index
+    if path == "":
+        index_path = os.path.join(dist_dir, "index.html")
+        if os.path.exists(index_path):
+            return send_from_directory(dist_dir, "index.html")
+    # serve static asset if it exists
+    file_path = os.path.join(dist_dir, path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return send_from_directory(dist_dir, path)
+    # fallback to small API health JSON
+    return jsonify({"message": "Aeris API is running", "ok": True})
 
 
 if __name__ == "__main__":
