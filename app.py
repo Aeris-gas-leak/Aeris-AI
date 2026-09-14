@@ -2,16 +2,19 @@ import os
 import csv
 import random
 import sqlite3
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, abort, jsonify, send_from_directory
 from flask_cors import CORS
+from werkzeug.security import safe_join
 from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-DATABASE_URL = os.path.join(os.path.dirname(__file__), "readings.db")
-CSV_PATH = os.path.join(os.path.dirname(__file__), "data.csv")
-CSV_PATH_FALLBACK = os.path.join(os.path.dirname(__file__), "sensor_data.csv")
+DATA_DIR = os.environ.get("AERIS_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+os.makedirs(DATA_DIR, exist_ok=True)
+DATABASE_URL = os.path.join(DATA_DIR, "readings.db")
+CSV_PATH = os.path.join(DATA_DIR, "data.csv")
+CSV_PATH_FALLBACK = os.path.join(DATA_DIR, "sensor_data.csv")
 
 def get_csv_path():
     if os.path.exists(CSV_PATH):
@@ -87,6 +90,15 @@ def init_db():
     conn.close()
 
 init_db()
+
+@app.route("/health")
+def health():
+    conn = get_db_connection()
+    try:
+        conn.execute("SELECT status FROM trigger_flags WHERE id=1").fetchone()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
 
 # ── Chart data API ─────────────────────────────────────────────────────────────
 @app.route("/api/chart/<room_name>")
@@ -209,15 +221,19 @@ def trigger_status():
 @app.route("/<path:path>")
 def serve_frontend(path):
     dist_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-    # serve index
-    if path == "":
-        index_path = os.path.join(dist_dir, "index.html")
-        if os.path.exists(index_path):
-            return send_from_directory(dist_dir, "index.html")
+    if path == "api" or path.startswith("api/"):
+        abort(404)
     # serve static asset if it exists
-    file_path = os.path.join(dist_dir, path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
+    file_path = safe_join(dist_dir, path)
+    if file_path is None:
+        abort(404)
+    if os.path.isfile(file_path):
         return send_from_directory(dist_dir, path)
+    if path.startswith("assets/") or os.path.splitext(path)[1]:
+        abort(404)
+    # React Router routes must also work when opened directly or refreshed.
+    if os.path.isfile(os.path.join(dist_dir, "index.html")):
+        return send_from_directory(dist_dir, "index.html")
     # fallback to small API health JSON
     return jsonify({"message": "Aeris API is running", "ok": True})
 
