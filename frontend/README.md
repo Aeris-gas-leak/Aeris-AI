@@ -1,16 +1,31 @@
-# React + Vite
+# Aeris frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React + Vite website and monitoring prototype.
 
-Currently, two official plugins are available:
+Use Node.js 22 LTS or 24 LTS for compatibility with the lint toolchain.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Run locally
 
-## React Compiler
+```sh
+npm ci
+npm run dev
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The homepage and its interactive sample floor preview work without the API. The existing monitoring app uses the Python API described in the repository's root README; start that server for charts and data-generation actions.
 
-## Expanding the ESLint configuration
+## Pages
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- `/`: public homepage. The floor preview contains fixed, explicitly labeled sample readings.
+- `/app`: the previous opening screen. Every **Try it** link on the homepage opens this page.
+- `/rooms`, `/room/:roomName`, `/immediate`, `/alerts`, `/about`: existing monitoring pages.
+
+The homepage uses `src/pages/Landing.jsx` and scoped styles in `src/styles/landing.css`. The monitoring pages keep their existing `PhoneShell` and `src/styles/app.css` styling.
+
+## Check and build
+
+```sh
+npm run lint
+npm run build
+```
+
+Publish `dist` on a static host configured to serve `index.html` for client-side routes. `public/_redirects` supplies this fallback for Netlify. Set `VITE_API_URL` to the API origin before building when hosting the app away from the local Python server.
