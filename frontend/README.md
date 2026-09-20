@@ -28,4 +28,6 @@ npm run lint
 npm run build
 ```
 
-Publish `dist` on a static host configured to serve `index.html` for client-side routes. `public/_redirects` supplies this fallback for Netlify. Set `VITE_API_URL` to the API origin before building when hosting the app away from the local Python server.
+For the existing Railway deployment, Flask serves the built frontend and its client-side routes, including `/app`. Leave `VITE_API_URL` empty so the website uses the API on the same domain. Vite proxies API requests to the local Python server during development.
+
+For separate static hosting, publish `dist` on a host configured to serve `index.html` for client-side routes. `public/_redirects` supplies this fallback for Netlify. Set `VITE_API_URL` to the separate API origin before building.

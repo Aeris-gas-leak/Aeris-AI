@@ -78,7 +78,7 @@ class DeploymentTests(unittest.TestCase):
 
     def test_direct_spa_routes_serve_the_built_index(self):
         self.create_frontend()
-        routes = ["/", "/rooms", "/room/Processing%20Area%20C", "/immediate", "/alerts", "/about"]
+        routes = ["/", "/app", "/rooms", "/room/Processing%20Area%20C", "/immediate", "/alerts", "/about"]
         result = self.run_app(f"""
             responses = {{}}
             for path in {routes!r}:
