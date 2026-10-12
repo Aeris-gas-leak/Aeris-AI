@@ -2,16 +2,19 @@ import os
 import csv
 import random
 import sqlite3
-from flask import Flask, jsonify, send_from_directory
+from flask import Flask, abort, jsonify, send_from_directory
 from flask_cors import CORS
-from datetime import datetime
+from werkzeug.security import safe_join
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
 
-DATABASE_URL = os.path.join(os.path.dirname(__file__), "readings.db")
-CSV_PATH = os.path.join(os.path.dirname(__file__), "data.csv")
-CSV_PATH_FALLBACK = os.path.join(os.path.dirname(__file__), "sensor_data.csv")
+DATA_DIR = os.environ.get("AERIS_DATA_DIR") or os.environ.get("RAILWAY_VOLUME_MOUNT_PATH") or os.path.dirname(__file__)
+os.makedirs(DATA_DIR, exist_ok=True)
+DATABASE_URL = os.path.join(DATA_DIR, "readings.db")
+CSV_PATH = os.path.join(DATA_DIR, "data.csv")
+CSV_PATH_FALLBACK = os.path.join(DATA_DIR, "sensor_data.csv")
 
 def get_csv_path():
     if os.path.exists(CSV_PATH):
@@ -23,6 +26,8 @@ THRESHOLDS = {
     "temperature_C": {"warning": 27.0, "danger": 29.0},
     "humidity_%":    {"warning": 60.0, "danger": 65.0},
     "pressure_hPa":  {"warning": 1020.0, "danger": 1023.0},
+    "ozone_ratio":   {"warning": 1.5,    "danger": 2.0},     # MQ-131 Rs/R0
+    "co2_ppm":       {"warning": 1000.0, "danger": 2000.0},  # MQ-135 CO2-equivalent
 }
 
 # Each room gets a deterministic slice of the CSV rows
@@ -45,6 +50,9 @@ def read_csv():
                 "temperature_C": float(row["temperature_C"]),
                 "humidity_%":    float(row["humidity_%"]),
                 "pressure_hPa":  float(row["pressure_hPa"]),
+                # gas columns are optional so older 4-column CSVs still load
+                "ozone_ratio":   float(row.get("ozone_ratio") or 1.0),
+                "co2_ppm":       float(row.get("co2_ppm") or 400.0),
             })
     return rows
 
@@ -88,34 +96,43 @@ def init_db():
 
 init_db()
 
+@app.route("/health")
+def health():
+    conn = get_db_connection()
+    try:
+        conn.execute("SELECT status FROM trigger_flags WHERE id=1").fetchone()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
 # ── Chart data API ─────────────────────────────────────────────────────────────
+def metric(rows, key, unit, label):
+    t = THRESHOLDS[key]
+    return {
+        "values": [r[key] for r in rows],
+        "warning_thresh": t["warning"],
+        "danger_thresh": t["danger"],
+        "unit": unit,
+        "label": label,
+    }
+
+def chart_payload(rows):
+    return {
+        "labels":      [r["timestamp"][-8:-3] for r in rows],
+        "temperature": metric(rows, "temperature_C", "°C",   "Temperature"),
+        "humidity":    metric(rows, "humidity_%",    "%",    "Humidity"),
+        "pressure":    metric(rows, "pressure_hPa",  " hPa", "Pressure"),
+        "ozone":       metric(rows, "ozone_ratio",   "",     "Ozone (MQ-131 Rs/R0)"),
+        "co2":         metric(rows, "co2_ppm",       " ppm", "CO2-equivalent (MQ-135)"),
+    }
+
 @app.route("/api/chart/<room_name>")
 def chart_data(room_name):
-    rows         = rows_for_room(room_name)
-    labels       = [r["timestamp"][-8:-3] for r in rows]
-    temperatures = [r["temperature_C"]    for r in rows]
-    humidities   = [r["humidity_%"]       for r in rows]
-    pressures    = [r["pressure_hPa"]     for r in rows]
-    return jsonify({
-        "labels": labels,
-        "temperature": {"values": temperatures, "warning_thresh": THRESHOLDS["temperature_C"]["warning"], "danger_thresh": THRESHOLDS["temperature_C"]["danger"], "unit": "°C",  "label": "Temperature"},
-        "humidity":    {"values": humidities,   "warning_thresh": THRESHOLDS["humidity_%"]["warning"],    "danger_thresh": THRESHOLDS["humidity_%"]["danger"],    "unit": "%",   "label": "Humidity"},
-        "pressure":    {"values": pressures,    "warning_thresh": THRESHOLDS["pressure_hPa"]["warning"],  "danger_thresh": THRESHOLDS["pressure_hPa"]["danger"],  "unit": " hPa","label": "Pressure"},
-    })
+    return jsonify(chart_payload(rows_for_room(room_name)))
 
 @app.route("/api/chart/all")
 def chart_data_all():
-    rows         = read_csv()
-    labels       = [r["timestamp"][-8:-3] for r in rows]
-    temperatures = [r["temperature_C"]    for r in rows]
-    humidities   = [r["humidity_%"]       for r in rows]
-    pressures    = [r["pressure_hPa"]     for r in rows]
-    return jsonify({
-        "labels": labels,
-        "temperature": {"values": temperatures, "warning_thresh": THRESHOLDS["temperature_C"]["warning"], "danger_thresh": THRESHOLDS["temperature_C"]["danger"], "unit": "°C",  "label": "Temperature"},
-        "humidity":    {"values": humidities,   "warning_thresh": THRESHOLDS["humidity_%"]["warning"],    "danger_thresh": THRESHOLDS["humidity_%"]["danger"],    "unit": "%",   "label": "Humidity"},
-        "pressure":    {"values": pressures,    "warning_thresh": THRESHOLDS["pressure_hPa"]["warning"],  "danger_thresh": THRESHOLDS["pressure_hPa"]["danger"],  "unit": " hPa","label": "Pressure"},
-    })
+    return jsonify(chart_payload(read_csv()))
 
 # ── Generate fake DB data ──────────────────────────────────────────────────────
 @app.route("/generate", methods=["POST"])
@@ -148,13 +165,17 @@ def generate_fake_data():
 def generate_csv():
     with open(CSV_PATH, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["timestamp", "temperature_C", "humidity_%", "pressure_hPa"])
-        for _ in range(216):
+        writer.writerow(["timestamp", "temperature_C", "humidity_%", "pressure_hPa", "ozone_ratio", "co2_ppm"])
+        now = datetime.utcnow()
+        for i in range(216):
+            when = now - timedelta(minutes=5 * (215 - i))
             writer.writerow([
-                datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                when.strftime("%Y-%m-%d %H:%M:%S"),
                 round(random.uniform(20.0, 30.0), 2),
                 round(random.uniform(30.0, 70.0), 2),
                 round(random.uniform(990.0, 1025.0), 2),
+                round(random.uniform(0.9, 2.2), 3),
+                round(random.uniform(420.0, 2200.0), 1),
             ])
 
 @app.route("/api/trigger/request", methods=["POST"])
@@ -209,15 +230,19 @@ def trigger_status():
 @app.route("/<path:path>")
 def serve_frontend(path):
     dist_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-    # serve index
-    if path == "":
-        index_path = os.path.join(dist_dir, "index.html")
-        if os.path.exists(index_path):
-            return send_from_directory(dist_dir, "index.html")
+    if path == "api" or path.startswith("api/"):
+        abort(404)
     # serve static asset if it exists
-    file_path = os.path.join(dist_dir, path)
-    if os.path.exists(file_path) and os.path.isfile(file_path):
+    file_path = safe_join(dist_dir, path)
+    if file_path is None:
+        abort(404)
+    if os.path.isfile(file_path):
         return send_from_directory(dist_dir, path)
+    if path.startswith("assets/") or os.path.splitext(path)[1]:
+        abort(404)
+    # React Router routes must also work when opened directly or refreshed.
+    if os.path.isfile(os.path.join(dist_dir, "index.html")):
+        return send_from_directory(dist_dir, "index.html")
     # fallback to small API health JSON
     return jsonify({"message": "Aeris API is running", "ok": True})
 

@@ -38,6 +38,22 @@ export default function Immediate() {
             warningThresh={data.pressure.warning_thresh} dangerThresh={data.pressure.danger_thresh}
             unit=" hPa" color="#34d399"
           />
+          {data.ozone && (
+            <ChartBlock
+              title="Ozone (MQ-131) — All Rooms" emoji="☁️"
+              values={data.ozone.values} labels={data.labels}
+              warningThresh={data.ozone.warning_thresh} dangerThresh={data.ozone.danger_thresh}
+              unit="" color="#f472b6"
+            />
+          )}
+          {data.co2 && (
+            <ChartBlock
+              title="CO2-equivalent (MQ-135) — All Rooms" emoji="🌫"
+              values={data.co2.values} labels={data.labels}
+              warningThresh={data.co2.warning_thresh} dangerThresh={data.co2.danger_thresh}
+              unit=" ppm" color="#fbbf24"
+            />
+          )}
         </>
       )}
 

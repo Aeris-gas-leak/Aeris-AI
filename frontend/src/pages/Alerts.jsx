@@ -8,6 +8,8 @@ const THRESHOLDS = {
   temperature_C: { warning: 27.0, danger: 29.0 },
   'humidity_%':  { warning: 60.0, danger: 65.0 },
   pressure_hPa:  { warning: 1020.0, danger: 1023.0 },
+  ozone_ratio:   { warning: 1.5,    danger: 2.0 },
+  co2_ppm:       { warning: 1000.0, danger: 2000.0 },
 }
 
 export default function Alerts() {
@@ -20,6 +22,8 @@ export default function Alerts() {
         temperature_C: data.temperature.values[i],
         'humidity_%':  data.humidity.values[i],
         pressure_hPa:  data.pressure.values[i],
+        ozone_ratio:   data.ozone ? data.ozone.values[i] : 0,
+        co2_ppm:       data.co2 ? data.co2.values[i] : 0,
         timestamp:     data.labels[i],
       }))
 
