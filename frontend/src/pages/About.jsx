@@ -4,7 +4,7 @@ import BackHeader from '../components/BackHeader.jsx'
 export default function About() {
   return (
     <PhoneShell>
-      <BackHeader to="/" title="About Aeris.AI" />
+      <BackHeader to="/app" title="About Aeris.AI" />
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '8px' }}>
         <div className="env-card" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '8px', padding: '20px' }}>
