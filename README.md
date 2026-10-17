@@ -12,30 +12,27 @@ FAKEDATA.py         ← Generates test sensor data (used until real RPi is conne
 SendData.py         ← Uploads sensor data to the cloud (PythonAnywhere).
 pi_data_runner.py   ← Runs on the Raspberry Pi. Waits for requests, then generates and sends data.
 requirements.txt    ← Python packages the server needs.
-frontend/           ← The website (what users see in their browser).
+frontend/           ← The website (what users see in their browser). Runs on simulated data for now.
 ```
 
 ---
 
 ## Running locally
 
-You need two terminals open at the same time.
+The website runs on its own. The Recorder at `/app` generates simulated sensor readings in the browser, so no server is needed:
 
-**Terminal 1 — the server:**
-```bash
-pip install -r requirements.txt
-python FAKEDATA.py        # generates test data (only needed the first time)
-python app.py             # starts the server at http://localhost:5000
-```
-
-**Terminal 2 — the website:**
 ```bash
 cd frontend
 npm install               # only needed the first time
 npm run dev               # opens the app at http://localhost:5173
 ```
 
-Open your browser to **http://localhost:5173**
+The Python server below is for the Raspberry Pi pipeline. The website doesn't use it yet. See `frontend/README.md` for how the simulated data works.
+
+```bash
+pip install -r requirements.txt
+python app.py             # starts the server at http://localhost:5000
+```
 
 ---
 
@@ -83,5 +80,4 @@ After changing, restart the server (`python app.py`).
 **Website (Netlify):**
 - Connect your GitHub repo to Netlify
 - Set: Base = `frontend`, Build command = `npm run build`, Publish = `frontend/dist`
-- Add environment variable: `VITE_API_URL` = `https://your-username.pythonanywhere.com`
 - After this, every `git push` automatically updates the website — no manual steps needed
