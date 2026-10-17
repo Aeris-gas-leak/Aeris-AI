@@ -16,7 +16,7 @@ Everything runs in the browser. The app does not need the Python API.
 ## Pages
 
 - `/`: public homepage. The floor preview contains fixed, explicitly labeled sample readings.
-- `/app`: the Recorder. Press **Record** to stream readings from a simulated sensor node in each room (Rooms A–D). Charts, the rooms table, threshold events and the per-room summary update as readings arrive. Speed runs at real time, 10× or 60×.
+- `/app`: the Recorder. Readings for Rooms A–D update every second on the floor plan and live charts. **Start recording** keeps them: the charts, threshold events and a per-room summary build as readings arrive. Speed runs at 1×, 10× or 60×.
 - `/app/recordings`: recordings saved when you stop. They are kept in this browser's local storage, and each one downloads as a CSV.
 - `/app/recordings/:id`: one saved recording.
 

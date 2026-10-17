@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react'
 import {
-  Chart, LineController, LineElement, PointElement, LinearScale, Tooltip,
+  Chart, LineController, LineElement, PointElement, LinearScale, Tooltip, Filler,
 } from 'chart.js'
 import { chartPoints, timeAt } from '../sensors/sessions.js'
 import { formatClock } from '../format.js'
 
-Chart.register(LineController, LineElement, PointElement, LinearScale, Tooltip)
+Chart.register(LineController, LineElement, PointElement, LinearScale, Tooltip, Filler)
 Chart.defaults.font.family = "'DM Sans', sans-serif"
 
 const INK = '#183e32'
@@ -134,7 +134,7 @@ export default function MetricChart({ session, roomId, roomLabel, metric, span }
   useEffect(() => {
     const chart = new Chart(canvasRef.current, {
       type: 'line',
-      data: { datasets: [{ data: [] }] },
+      data: { datasets: [{ data: [], fill: 'start', backgroundColor: 'rgba(113, 146, 103, 0.13)' }] },
       options: {
         animation: false,
         maintainAspectRatio: false,
@@ -142,7 +142,7 @@ export default function MetricChart({ session, roomId, roomLabel, metric, span }
         normalized: true,
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
         elements: {
-          line: { borderColor: INK, borderWidth: 2, tension: 0, spanGaps: false },
+          line: { borderColor: INK, borderWidth: 2, tension: 0, spanGaps: true },
           point: { radius: 0, hoverRadius: 4, hoverBorderWidth: 2, backgroundColor: INK, hoverBorderColor: '#fff' },
         },
         scales: {

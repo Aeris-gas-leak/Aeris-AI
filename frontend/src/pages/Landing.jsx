@@ -58,7 +58,7 @@ function FloorPreview() {
           <div><dt>Pressure</dt><dd>{selected.pressure}<span>hPa</span></dd></div>
         </dl>
       </div>
-      <p className="aeris-preview-note">An interactive illustration. The app uses simulated data.</p>
+      <p className="aeris-preview-note">An interactive illustration. Open the app for live readings.</p>
     </section>
   )
 }

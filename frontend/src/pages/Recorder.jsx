@@ -1,57 +1,98 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import SessionView from '../components/SessionView.jsx'
-import { MAX_SECONDS, SPEEDS, setSpeed, start, stop, useRecorder } from '../sensors/recorder.js'
-import { downloadCsv, durationSeconds } from '../sensors/sessions.js'
+import FloorPlan from '../components/FloorPlan.jsx'
+import RoomCharts from '../components/RoomCharts.jsx'
+import EventLog from '../components/EventLog.jsx'
+import SummaryTable from '../components/SummaryTable.jsx'
+import {
+  MAX_SECONDS, SPEEDS, setSpeed, showLive, start, stop, useRecorder,
+} from '../sensors/recorder.js'
+import { downloadCsv, durationSeconds, latestReading, timeAt } from '../sensors/sessions.js'
 import { ROOMS } from '../sensors/rooms.js'
-import { formatCount, formatDuration, formatSpan } from '../format.js'
+import { eventText, roomLabel } from '../sensors/status.js'
+import { formatClock, formatCount, formatDuration, formatSpan } from '../format.js'
 
-const SPEED_LABELS = { 1: 'Real time', 10: '10×', 60: '60×' }
+// The live chart window grows in steps, so new readings always have room
+// to land and the line fills between half and all of the chart.
+const WINDOWS = [60, 120, 300, 600, 900, 1800, 3600, 7200]
 
-function RecordButton({ recording }) {
-  return recording ? (
-    <button type="button" className="record-button is-recording" onClick={() => stop()}>
-      <i className="icon-stop" aria-hidden="true" /> Stop recording
-    </button>
-  ) : (
-    <button type="button" className="record-button" onClick={start}>
-      <i className="icon-record" aria-hidden="true" /> Record
-    </button>
-  )
+function chartWindow(seconds) {
+  return WINDOWS.find(w => w >= seconds) ?? seconds
 }
 
-function SavedNotice({ session, saved, stoppedAtLimit }) {
-  const length = formatSpan(durationSeconds(session))
+const SPEED_LABELS = { 1: '1×', 10: '10×', 60: '60×' }
+const STATE_LABELS = { idle: 'Live', recording: 'Recording', stopped: 'Recording saved' }
+
+function finalReadings(session) {
+  return Object.fromEntries(ROOMS.map(r => [r.id, latestReading(session, r.id)]))
+}
+
+function LatestEvent({ session, latest }) {
+  if (!session) {
+    const reporting = ROOMS.filter(r => latest[r.id]).length
+    return (
+      <div className="console-latest">
+        <p className="console-latest-label">Sensors</p>
+        <p>{reporting === ROOMS.length ? `All ${reporting} reporting` : `${reporting} of ${ROOMS.length} reporting`}</p>
+      </div>
+    )
+  }
+  const e = session.events.at(-1)
   return (
-    <div className="notice" role="status">
-      <p>
-        {stoppedAtLimit && `Recordings stop at ${formatSpan(MAX_SECONDS)}. `}
-        {saved
-          ? <>Saved a {length} recording to <Link to={`/app/recordings/${session.id}`}>Recordings</Link>.</>
-          : <>This {length} recording is too large to keep in this browser. Download the CSV to keep it.</>}
-      </p>
-      <button type="button" className="text-button" onClick={() => downloadCsv(session)}>Download CSV</button>
+    <div className="console-latest">
+      <p className="console-latest-label">Latest event</p>
+      {e ? (
+        <p className={`is-${e.to}`}>
+          <time>{formatClock(timeAt(session, e.t))}</time> <strong>{roomLabel(e.room)}</strong> {eventText(e)}
+        </p>
+      ) : (
+        <p>Nothing has crossed a threshold yet.</p>
+      )}
     </div>
   )
 }
 
-export default function Recorder() {
-  const { status, session, speed, saved, stoppedAtLimit } = useRecorder()
+function StatusPanel({ status, session, latest, speed, saved, stoppedAtLimit }) {
   const recording = status === 'recording'
   const elapsed = session ? durationSeconds(session) : 0
-  const span = recording ? Math.max(elapsed, 60 * speed) : elapsed
 
   return (
-    <>
-      <section className="recorder-bar" aria-labelledby="recorder-heading">
-        <div className="recorder-intro">
-          <h1 id="recorder-heading">Recorder</h1>
-          <p>
-            Readings come from a simulated sensor node in each of the four rooms, one reading a second.
-            The Raspberry Pi will feed this same view once it is connected.
-          </p>
-        </div>
+    <div className="console-status">
+      <p className={`console-state is-${status}`}>
+        <i aria-hidden="true" />{status === 'stopped' && !saved ? 'Recording not saved' : STATE_LABELS[status]}
+      </p>
+      <p className="console-timer" aria-label={`Recording length ${formatDuration(elapsed)}`}>
+        {formatDuration(elapsed)}
+      </p>
+      <dl className="console-stats">
+        <div><dt>Readings</dt><dd>{formatCount(session ? session.length * ROOMS.length : 0)}</dd></div>
+        <div><dt>Threshold events</dt><dd>{session ? session.events.length : 0}</dd></div>
+      </dl>
 
-        <div className="recorder-controls">
+      <LatestEvent session={session} latest={latest} />
+
+      <div className="console-actions">
+        {recording ? (
+          <button type="button" className="console-button is-stop" onClick={() => stop()}>
+            <i aria-hidden="true" /> Stop recording
+          </button>
+        ) : (
+          <button type="button" className="console-button" onClick={start}>
+            <i aria-hidden="true" /> {status === 'stopped' ? 'Start a new recording' : 'Start recording'}
+          </button>
+        )}
+
+        {status === 'stopped' ? (
+          <p className="console-note" role="status">
+            {stoppedAtLimit && `Recordings stop at ${formatSpan(MAX_SECONDS)}. `}
+            {saved
+              ? <>Saved to <Link to={`/app/recordings/${session.id}`}>Recordings</Link>. </>
+              : 'Too large to keep in this browser. '}
+            <button type="button" className="console-link" onClick={() => downloadCsv(session)}>Download CSV</button>
+            {' or '}
+            <button type="button" className="console-link" onClick={showLive}>back to live</button>
+          </p>
+        ) : (
           <fieldset className="speed">
             <legend>Speed</legend>
             {SPEEDS.map(s => (
@@ -61,39 +102,45 @@ export default function Recorder() {
               </label>
             ))}
           </fieldset>
+        )}
+      </div>
+    </div>
+  )
+}
 
-          <RecordButton recording={recording} />
+export default function Recorder() {
+  const recorder = useRecorder()
+  const { status, session, latest, preview } = recorder
+  const [selected, setSelected] = useState('B')
 
-          <dl className="recorder-clock" aria-live="off">
-            <div>
-              <dt>Length</dt>
-              <dd>{recording && <i className="rec-dot" aria-hidden="true" />}{formatDuration(elapsed)}</dd>
-            </div>
-            <div>
-              <dt>Readings</dt>
-              <dd>{formatCount(session ? session.length * ROOMS.length : 0)}</dd>
-            </div>
-          </dl>
-        </div>
+  if (!preview) return null
+
+  const recording = status === 'recording'
+  const showing = session ?? preview
+  const elapsed = session ? durationSeconds(session) : 0
+  const span = recording ? chartWindow(elapsed) : session ? elapsed : chartWindow(preview.length)
+  const readings = status === 'stopped' ? finalReadings(session) : latest
+
+  return (
+    <>
+      <header className="page-head">
+        <h1>Recorder</h1>
+        <p>Every room, updated each second. Start recording to keep the readings, chart them and log anything that crosses a threshold.</p>
+      </header>
+
+      <section className={`console is-${status}`} aria-label="Rooms and recording">
+        <FloorPlan readings={readings} selected={selected} onSelect={setSelected} live={status !== 'stopped'} />
+        <StatusPanel {...recorder} />
       </section>
 
-      {status === 'stopped' && <SavedNotice session={session} saved={saved} stoppedAtLimit={stoppedAtLimit} />}
+      <div className="room-section">
+        <RoomCharts series={showing} roomId={selected} span={span} />
+        <aside className="room-aside">
+          <EventLog session={session} />
+        </aside>
+      </div>
 
-      {session ? (
-        <SessionView key={session.id} session={session} span={span} live={recording} />
-      ) : (
-        <section className="empty-state" aria-labelledby="empty-heading">
-          <h2 id="empty-heading">Nothing recorded yet</h2>
-          <p>
-            Press Record to start taking readings. Charts for temperature, humidity and pressure
-            build as the data arrives, and any reading that crosses a threshold is logged.
-          </p>
-          <p>
-            Real time runs at the sensor's pace. 10× and 60× fast-forward the floor, so an
-            hour of readings takes a minute.
-          </p>
-        </section>
-      )}
+      {session && <SummaryTable session={session} />}
     </>
   )
 }
