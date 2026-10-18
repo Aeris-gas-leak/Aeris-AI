@@ -42,4 +42,6 @@ npm run lint
 npm run build
 ```
 
-Publish `dist` on a static host configured to serve `index.html` for client-side routes. `public/_redirects` supplies this fallback for Netlify.
+On Railway, Flask serves the built frontend and its client-side routes, including `/app/recordings`.
+
+For static hosting such as AWS Amplify, publish `dist` and add a rewrite that serves `index.html` (200) for client-side routes. `public/_redirects` supplies this fallback for Netlify.
