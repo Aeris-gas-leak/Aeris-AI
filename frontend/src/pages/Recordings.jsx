@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
+import PhoneShell from '../components/PhoneShell.jsx'
+import BackHeader from '../components/BackHeader.jsx'
 import { deleteSession, downloadCsv, durationSeconds, loadSessions } from '../sensors/sessions.js'
-import { ROOMS } from '../sensors/rooms.js'
-import { formatCount, formatDate, formatDuration } from '../format.js'
+import { SENSOR_COUNT } from '../sensors/display.js'
+import { formatCount, formatDate, formatDuration, plural } from '../format.js'
 
 export default function Recordings() {
   const [sessions, setSessions] = useState(loadSessions)
@@ -15,51 +17,45 @@ export default function Recordings() {
   }
 
   return (
-    <section className="recordings" aria-labelledby="recordings-heading">
-      <h1 id="recordings-heading">Recordings</h1>
-      <p className="page-note">Saved in this browser. Download a CSV to keep a recording anywhere else.</p>
+    <PhoneShell>
+      <BackHeader to="/rooms" title="Recordings" />
 
-      {sessions.length ? (
-        <div className="table-scroll">
-          <table className="recordings-table">
-            <thead>
-              <tr>
-                <th scope="col">Started</th>
-                <th scope="col" className="num">Length</th>
-                <th scope="col" className="num">Readings</th>
-                <th scope="col" className="num">Threshold events</th>
-                <th scope="col"><span className="visually-hidden">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map(s => (
-                <tr key={s.id}>
-                  <th scope="row"><Link to={`/app/recordings/${s.id}`}>{formatDate(s.startedAt)}</Link></th>
-                  <td className="num">{formatDuration(durationSeconds(s))}</td>
-                  <td className="num">{formatCount(s.length * ROOMS.length)}</td>
-                  <td className="num">{s.events.length}</td>
-                  <td className="row-actions">
-                    <button type="button" className="text-button" onClick={() => downloadCsv(s)}>Download CSV</button>
-                    {confirming === s.id ? (
-                      <>
-                        <button type="button" className="text-button danger" onClick={() => remove(s.id)}>Delete for good</button>
-                        <button type="button" className="text-button" onClick={() => setConfirming(null)}>Keep</button>
-                      </>
-                    ) : (
-                      <button type="button" className="text-button" onClick={() => setConfirming(s.id)}>Delete</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {sessions.length === 0 ? (
+        <div style={{ textAlign: 'center', color: 'var(--muted)', padding: '40px 20px', fontSize: '14px', lineHeight: 1.6 }}>
+          No recordings yet. Press Record on the <Link className="view-all" to="/rooms">dashboard</Link> to start one.
         </div>
       ) : (
-        <div className="empty-state">
-          <h2>No recordings yet</h2>
-          <p>Recordings appear here when you stop them. <Link to="/app">Open the Recorder</Link> to make one.</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          {sessions.map(s => (
+            <div className="alert-item" key={s.id}>
+              <div className="alert-row-top">
+                <Link className="alert-area recording-link" to={`/recordings/${s.id}`}>{formatDate(s.startedAt)}</Link>
+                <span className="alert-time">{formatDuration(durationSeconds(s))}</span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
+                <span className="alert-sensor">{formatCount(s.length * SENSOR_COUNT)} readings</span>
+                <span className="alert-reading">{plural(s.events.length, 'threshold event')}</span>
+              </div>
+              <div className="recording-actions">
+                {confirming === s.id ? (
+                  <>
+                    <span>Delete this recording?</span>
+                    <button type="button" className="is-danger" onClick={() => remove(s.id)}>Delete</button>
+                    <button type="button" onClick={() => setConfirming(null)}>Keep</button>
+                  </>
+                ) : (
+                  <>
+                    <Link to={`/recordings/${s.id}`}>Open</Link>
+                    <button type="button" onClick={() => downloadCsv(s)}>Download CSV</button>
+                    <button type="button" onClick={() => setConfirming(s.id)}>Delete</button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
         </div>
       )}
-    </section>
+      <p className="know-more" style={{ fontSize: '12px' }}>Recordings are kept in this browser.</p>
+    </PhoneShell>
   )
 }

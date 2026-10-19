@@ -2,14 +2,17 @@ import { ROOMS } from './rooms.js'
 
 // Stands in for the Raspberry Pi until it is connected. Each call to step()
 // returns one reading per room, rounded like the Pi's CSV rows
-// (timestamp, temperature_C, humidity_%, pressure_hPa).
+// (timestamp, temperature_C, humidity_%, pressure_hPa, ozone_ratio, co2_ppm).
 //
 // The model, per room:
 //   temperature = baseline + thermostat cycle + slow drift + heat event + noise
 //   humidity    = baseline + slow drift - (temperature rise × 2.8) + moisture event + noise
 //   pressure    = building pressure (weather) + room offset + air-handling jitter + noise
+//   ozone       = clean-air ratio 1.0 + slow drift + ozone event + noise   (MQ-131 Rs/R0)
+//   co2         = room baseline + occupancy cycle + slow drift + gas event + noise
 // Heat events stand for a machine run or a cooling fault; moisture events for a
-// loading-dock door or a wash-down. Both arrive at random and ease in and out.
+// loading-dock door or a wash-down; ozone and CO2 events for a gas release
+// or poor ventilation. All arrive at random and ease in and out.
 
 const HUMIDITY_PER_DEGREE = 2.8
 const DROPOUT_CHANCE = 0.002
@@ -30,14 +33,19 @@ function drift(x, dt, tau, sd) {
   return x * a + sd * Math.sqrt(1 - a * a) * gaussian()
 }
 
-function round2(x) {
-  return Math.round(x * 100) / 100
+function round(x, digits = 2) {
+  const f = 10 ** digits
+  return Math.round(x * f) / f
 }
 
 const EVENT_SHAPES = {
   heat:     { amp: [2.2, 5.0], rise: [120, 300], hold: [180, 600], fall: [300, 600] },
   moisture: { amp: [6, 14],    rise: [30, 90],   hold: [120, 420], fall: [240, 480] },
+  ozone:    { amp: [0.4, 1.3],  rise: [20, 60],   hold: [60, 300],  fall: [120, 300] },
+  co2:      { amp: [450, 1700], rise: [60, 180],  hold: [120, 480], fall: [300, 600] },
 }
+
+const EVENT_KINDS = Object.keys(EVENT_SHAPES)
 
 function newEvent(kind) {
   const s = EVENT_SHAPES[kind]
@@ -71,8 +79,10 @@ function newRoomState(room) {
     tempDrift: gaussian() * 0.25,
     humDrift: gaussian() * 1.0,
     airJitter: 0,
-    offsets: { heat: 0, moisture: 0 },
-    events: { heat: null, moisture: null },
+    ozoneDrift: 0,
+    co2Drift: gaussian() * 40,
+    offsets: { heat: 0, moisture: 0, ozone: 0, co2: 0 },
+    events: { heat: null, moisture: null, ozone: null, co2: null },
   }
 }
 
@@ -93,9 +103,11 @@ export function createSimulator() {
       s.tempDrift = drift(s.tempDrift, dt, 600, 0.25)
       s.humDrift = drift(s.humDrift, dt, 480, 1.0)
       s.airJitter = drift(s.airJitter, dt, 30, 0.04)
+      s.ozoneDrift = drift(s.ozoneDrift, dt, 300, 0.03)
+      s.co2Drift = drift(s.co2Drift, dt, 900, 40)
 
-      for (const kind of ['heat', 'moisture']) {
-        const perHour = kind === 'heat' ? s.room.heatPerHour : s.room.moisturePerHour
+      for (const kind of EVENT_KINDS) {
+        const perHour = s.room[`${kind}PerHour`]
         if (!s.events[kind] && Math.random() < perHour * dt / 3600) {
           s.events[kind] = newEvent(kind)
         }
@@ -113,10 +125,15 @@ export function createSimulator() {
     const humidity = r.humidity + s.humDrift - tempRise * HUMIDITY_PER_DEGREE
       + s.offsets.moisture + gaussian() * 0.12
     const pressure = weather.pressure + r.pressureOffset + s.airJitter + gaussian() * 0.02
+    const ozone = 1 + s.ozoneDrift + s.offsets.ozone + gaussian() * 0.01
+    const occupancy = 60 * Math.sin(2 * Math.PI * clock / 3600 + s.cyclePhase)
+    const co2 = r.co2 + occupancy + s.co2Drift + s.offsets.co2 + gaussian() * 8
     return {
-      temperature: round2(temperature),
-      humidity: round2(Math.min(98, Math.max(5, humidity))),
-      pressure: round2(pressure),
+      temperature: round(temperature),
+      humidity: round(Math.min(98, Math.max(5, humidity))),
+      pressure: round(pressure),
+      ozone: round(Math.max(0.8, ozone), 3),
+      co2: round(Math.max(400, co2), 1),
     }
   }
 
@@ -126,7 +143,7 @@ export function createSimulator() {
   for (let t = 0; t < warmup; t += 5) advance(5)
   if (Math.random() < 0.6) {
     const s = rooms[Math.floor(Math.random() * rooms.length)]
-    const kind = s.room.moisturePerHour > s.room.heatPerHour ? 'moisture' : 'heat'
+    const kind = EVENT_KINDS.reduce((a, b) => (s.room[`${b}PerHour`] > s.room[`${a}PerHour`] ? b : a))
     if (!s.events[kind]) s.events[kind] = newEvent(kind)
   }
 

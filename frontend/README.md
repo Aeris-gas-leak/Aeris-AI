@@ -16,21 +16,25 @@ Everything runs in the browser. The app does not need the Python API.
 ## Pages
 
 - `/`: public homepage. The floor preview contains fixed, explicitly labeled sample readings.
-- `/app`: the Recorder. Readings for Rooms A–D update every second on the floor plan and live charts. **Start recording** keeps them: the charts, threshold events and a per-room summary build as readings arrive. Speed runs at 1×, 10× or 60×.
-- `/app/recordings`: recordings saved when you stop. They are kept in this browser's local storage, and each one downloads as a CSV.
-- `/app/recordings/:id`: one saved recording.
+- `/app`: opening screen. **Start recording** starts a recording and opens the dashboard.
+- `/rooms`: dashboard. **Record** / **Stop**, speed (1×, 10× or 60×), live statistics, the factory map with one dot per sensor, and recent recordings.
+- `/room/:roomName`: one room's latest readings and a chart per sensor.
+- `/immediate`: every sensor, one chart per measurement with a line per room.
+- `/alerts`: readings over a threshold right now, and the threshold events of the current or last recording.
+- `/recordings` and `/recordings/:id`: recordings saved when you stop. They are kept in this browser's local storage, and each one downloads as a CSV.
+- `/about`
 
-Old prototype links (`/rooms`, `/alerts`, …) redirect to `/app`.
+While a recording runs, a bar at the top of every screen shows its length and a Stop button.
 
 ## Where the data comes from
 
-`src/sensors/simulator.js` stands in for the Raspberry Pi. It models each room with a baseline, a thermostat cycle, slow drift, sensor noise, the link between temperature and relative humidity, and random heat and moisture events. It also drops the occasional reading the way a real sensor does. Room baselines and event rates live in `src/sensors/rooms.js`, next to the thresholds. Those thresholds mirror `THRESHOLDS` in `app.py`.
+`src/sensors/simulator.js` stands in for the Raspberry Pi. It models each room (the three rooms in `app.py`) with a baseline, a thermostat cycle, slow drift, sensor noise, the link between temperature and relative humidity, and random heat, moisture, ozone and CO2 events. It also drops the occasional reading the way a real sensor does. Room baselines and event rates live in `src/sensors/rooms.js`, next to the thresholds. Those thresholds mirror `THRESHOLDS` in `app.py`.
 
 CSV exports use the Pi's columns with a `room` column added:
 
 ```
-timestamp,room,temperature_C,humidity_%,pressure_hPa
-2026-10-16 18:33:58,A,23.74,50.01,1014.22
+timestamp,room,temperature_C,humidity_%,pressure_hPa,ozone_ratio,co2_ppm
+2026-10-16 18:33:58,Processing Area C,23.74,50.01,1014.22,1.012,618.4
 ```
 
 Connecting the Pi means feeding its readings into `src/sensors/recorder.js` in place of `simulator.step()`. Everything downstream stays the same.

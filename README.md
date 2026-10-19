@@ -19,7 +19,7 @@ frontend/           ← The website (what users see in their browser). Runs on s
 
 ## Running locally
 
-The website runs on its own. The Recorder at `/app` generates simulated sensor readings in the browser, so no server is needed:
+The website runs on its own. It generates sensor readings in the browser, and you can record them from the dashboard, so no server is needed:
 
 ```bash
 cd frontend

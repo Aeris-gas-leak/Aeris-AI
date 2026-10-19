@@ -1,11 +1,11 @@
 import { METRICS, ROOMS, levelFor } from './rooms.js'
 
-const STORAGE_KEY = 'aeris.sessions.v1'
+const STORAGE_KEY = 'aeris.sessions.v2'
 const LEVEL_RANK = { normal: 0, warning: 1, danger: 2 }
 
 export function newSession() {
   const rooms = {}
-  for (const r of ROOMS) rooms[r.id] = { temperature: [], humidity: [], pressure: [] }
+  for (const r of ROOMS) rooms[r.id] = Object.fromEntries(METRICS.map(m => [m.key, []]))
   return {
     id: crypto.randomUUID(),
     source: 'simulated',
@@ -48,35 +48,11 @@ export function createLevelTracker() {
   }
 }
 
-export function roomStats(session, roomId) {
-  const out = {}
-  for (const m of METRICS) {
-    const values = session.rooms[roomId][m.key]
-    let min = Infinity, max = -Infinity, sum = 0, n = 0, overWarning = 0
-    for (const v of values) {
-      if (v == null) continue
-      if (v < min) min = v
-      if (v > max) max = v
-      if (v >= m.warning) overWarning++
-      sum += v
-      n++
-    }
-    out[m.key] = n
-      ? { min, max, mean: sum / n, overWarningSeconds: overWarning * session.sampleSeconds }
-      : null
-  }
-  return out
-}
-
 export function latestReading(session, roomId) {
   const room = session.rooms[roomId]
   for (let i = session.length - 1; i >= Math.max(0, session.length - 5); i--) {
     if (room.temperature[i] != null) {
-      return {
-        temperature: room.temperature[i],
-        humidity: room.humidity[i],
-        pressure: room.pressure[i],
-      }
+      return Object.fromEntries(METRICS.map(m => [m.key, room[m.key][i]]))
     }
   }
   return null

@@ -31,48 +31,66 @@ export const METRICS = [
     danger: 1023.0,
     hysteresis: 0.3,
   },
+  {
+    key: 'ozone',
+    csv: 'ozone_ratio',
+    label: 'Ozone (MQ-131)',
+    unit: '',
+    decimals: 2,
+    warning: 1.5,
+    danger: 2.0,
+    hysteresis: 0.05,
+  },
+  {
+    key: 'co2',
+    csv: 'co2_ppm',
+    label: 'CO2-equivalent (MQ-135)',
+    unit: 'ppm',
+    decimals: 0,
+    warning: 1000.0,
+    danger: 2000.0,
+    hysteresis: 50,
+  },
 ]
 
 export const METRIC_BY_KEY = Object.fromEntries(METRICS.map(m => [m.key, m]))
 
-// One sensor node per room. The baselines and event rates describe how each
-// room behaves; they are what make the simulated readings differ by room.
+// One sensor node per room, named as in app.py's ROOM_SLICES. The baselines
+// and event rates describe how each room behaves; they are what make the
+// simulated readings differ by room.
 export const ROOMS = [
   {
-    id: 'A',
-    name: 'Processing',
+    id: 'Processing Area C',
     temperature: 24.2,
     humidity: 48,
     pressureOffset: -0.12,
+    co2: 620,
     heatPerHour: 3,
     moisturePerHour: 0.5,
+    ozonePerHour: 1.5,
+    co2PerHour: 2,
   },
   {
-    id: 'B',
-    name: 'Storage',
+    id: 'Storage Area B',
     temperature: 26.2,
     humidity: 55,
     pressureOffset: 0.08,
+    co2: 480,
     heatPerHour: 1.5,
     moisturePerHour: 5,
+    ozonePerHour: 0.3,
+    co2PerHour: 0.5,
   },
   {
-    id: 'C',
-    name: 'Assembly',
+    id: 'Floor #01',
     temperature: 23.8,
     humidity: 51,
     pressureOffset: 0,
+    co2: 540,
     heatPerHour: 1,
     moisturePerHour: 0.5,
-  },
-  {
-    id: 'D',
-    name: 'Compressor room',
-    temperature: 25.1,
-    humidity: 46,
-    pressureOffset: -0.2,
-    heatPerHour: 2.5,
-    moisturePerHour: 0.3,
+    ozonePerHour: 0.5,
+    co2PerHour: 1,
   },
 ]
 
