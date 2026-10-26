@@ -1,4 +1,4 @@
-import { ROOMS } from './rooms.js'
+import { ROOMS } from '../sensors/rooms.js'
 
 // Stands in for the Raspberry Pi until it is connected. Each call to step()
 // returns one reading per room, rounded like the Pi's CSV rows
