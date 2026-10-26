@@ -1,146 +1,175 @@
-import { useSyncExternalStore } from 'react'
-import { METRICS, ROOMS } from './rooms.js'
-import { createSimulator } from './simulator.js'
-import { createLevelTracker, newSession, saveSession, timeAt } from './sessions.js'
+import { METRICS, ROOMS, levelFor } from './rooms.js'
 
-// One feed for the whole app. Readings arrive every second from the moment
-// the app opens; the last few minutes are kept for the live charts, and
-// Start recording also captures them into a session. Arrays are filled in
-// place; `version` changes on every tick so React knows to redraw.
+const STORAGE_KEY = 'aeris.sessions.v2'
+const LEVEL_RANK = { normal: 0, warning: 1, danger: 2 }
 
-export const SPEEDS = [1, 10, 60]
-export const MAX_SECONDS = 2 * 60 * 60
-export const PREVIEW_SECONDS = 300
-const TICK_MS = 250
-const MAX_CATCH_UP = 3600
-
-let state = {
-  status: 'idle',
-  latest: {},
-  preview: null,
-  session: null,
-  speed: 1,
-  saved: null,
-  stoppedAtLimit: false,
-  version: 0,
+export function ensureRoomSeries(rooms, roomId) {
+  if (!rooms[roomId]) {
+    rooms[roomId] = Object.fromEntries(METRICS.map(m => [m.key, []]))
+  }
 }
 
-const listeners = new Set()
-let timer = null
-let sim = null
-let track = null
-let clock = 0
-let bootedAt = 0
-let anchor = { wall: 0, sim: 0 }
-
-function set(patch) {
-  state = { ...state, ...patch, version: state.version + 1 }
-  for (const l of listeners) l()
+export function newSession() {
+  const rooms = {}
+  for (const r of ROOMS) ensureRoomSeries(rooms, r.id)
+  return {
+    id: crypto.randomUUID(),
+    source: 'simulated',
+    startedAt: Date.now(),
+    endedAt: null,
+    sampleSeconds: 1,
+    length: 0,
+    rooms,
+    events: [],
+  }
 }
 
-function simTarget() {
-  return anchor.sim + (performance.now() - anchor.wall) / 1000 * state.speed
+export function timeAt(session, index) {
+  return session.startedAt + index * session.sampleSeconds * 1000
 }
 
-function nowMs() {
-  return bootedAt + clock * 1000
+export function durationSeconds(session) {
+  return session.length * session.sampleSeconds
 }
 
-function pushPreview(preview, readings) {
-  const full = preview.length >= PREVIEW_SECONDS
+// Tracks each room/metric's alert level with hysteresis, so a reading that
+// hovers on a threshold produces one event rather than a burst of them.
+export function createLevelTracker() {
+  const current = {}
   for (const r of ROOMS) {
-    for (const m of METRICS) {
-      const values = preview.rooms[r.id][m.key]
-      values.push(readings[r.id] ? readings[r.id][m.key] : null)
-      if (full) values.shift()
+    current[r.id] = current[r.id] ?? {}
+    for (const m of METRICS) current[r.id][m.key] ??= 'normal'
+  }
+
+  return function track(roomId, metric, value, t) {
+    if (value == null) return null
+    if (!current[roomId]) current[roomId] = {}
+    if (!current[roomId][metric.key]) current[roomId][metric.key] = 'normal'
+    const was = current[roomId][metric.key]
+    let now = levelFor(metric, value)
+    if (LEVEL_RANK[now] < LEVEL_RANK[was]) {
+      now = levelFor(metric, value + metric.hysteresis)
+    }
+    if (now === was) return null
+    current[roomId][metric.key] = now
+    return { t, room: roomId, metric: metric.key, from: was, to: now, value }
+  }
+}
+
+export function latestReading(session, roomId) {
+  const room = session.rooms[roomId]
+  if (!room) return null
+  for (let i = session.length - 1; i >= Math.max(0, session.length - 5); i--) {
+    if (room.temperature[i] != null) {
+      return Object.fromEntries(METRICS.map(m => [m.key, room[m.key][i]]))
     }
   }
-  if (full) preview.startedAt += 1000
-  else preview.length++
+  return null
 }
 
-function pushSession(session, readings) {
-  const i = session.length
-  for (const r of ROOMS) {
-    const reading = readings[r.id]
-    for (const m of METRICS) {
-      const value = reading ? reading[m.key] : null
-      session.rooms[r.id][m.key].push(value)
-      const event = track(r.id, m, value, i)
-      if (event) session.events.push(event)
+// Thins a long series for drawing. Each bucket keeps its lowest and highest
+// reading, so short spikes survive; a bucket with no readings becomes a gap.
+export function chartPoints(session, values, maxPoints = 720) {
+  const step = session.sampleSeconds
+  if (values.length <= maxPoints) {
+    return values.map((y, i) => ({ x: i * step, y }))
+  }
+  const size = Math.ceil(values.length / (maxPoints / 2))
+  const points = []
+  for (let start = 0; start < values.length; start += size) {
+    let lo = null, hi = null
+    const end = Math.min(start + size, values.length)
+    for (let i = start; i < end; i++) {
+      const v = values[i]
+      if (v == null) continue
+      if (lo == null || v < values[lo]) lo = i
+      if (hi == null || v > values[hi]) hi = i
+    }
+    if (lo == null) {
+      points.push({ x: start * step, y: null })
+    } else {
+      for (const i of lo <= hi ? [lo, hi] : [hi, lo]) {
+        if (points.at(-1)?.x !== i * step) points.push({ x: i * step, y: values[i] })
+      }
     }
   }
-  session.length = i + 1
+  return points
 }
 
-function sample() {
-  const readings = sim.step(1)
-  clock++
-  for (const r of ROOMS) if (readings[r.id]) state.latest[r.id] = readings[r.id]
-  pushPreview(state.preview, readings)
-  if (state.status === 'recording') pushSession(state.session, readings)
+function pad(n) {
+  return String(n).padStart(2, '0')
 }
 
-function tick() {
-  const target = Math.min(simTarget(), clock + MAX_CATCH_UP)
-  while (clock < target) {
-    sample()
-    if (state.status === 'recording' && state.session.length >= MAX_SECONDS) {
-      stop(true)
-      return
+export function csvTimestamp(ms) {
+  const d = new Date(ms)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+    + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// Same columns as the Pi's CSV, with the room added.
+export function sessionCsv(session) {
+  const lines = [['timestamp', 'room', ...METRICS.map(m => m.csv)].join(',')]
+  for (let i = 0; i < session.length; i++) {
+    const ts = csvTimestamp(timeAt(session, i))
+    for (const r of ROOMS) {
+      const room = session.rooms[r.id]
+      if (!room || room.temperature[i] == null) continue
+      lines.push([ts, r.id, ...METRICS.map(m => room[m.key][i])].join(','))
     }
   }
-  set({})
+  return lines.join('\n') + '\n'
 }
 
-function boot() {
-  sim = createSimulator()
-  clock = 0
-  bootedAt = Date.now()
-  anchor = { wall: performance.now(), sim: 0 }
-  const preview = newSession()
-  preview.startedAt = bootedAt
-  state = { ...state, preview }
-  sample()
-  timer = setInterval(tick, TICK_MS)
+export function downloadCsv(session) {
+  const blob = new Blob([sessionCsv(session)], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `aeris-${csvTimestamp(session.startedAt).replace(/[: ]/g, '-')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
-export function start() {
-  if (state.status === 'recording') return
-  track = createLevelTracker()
-  const session = newSession()
-  session.startedAt = nowMs()
-  set({ status: 'recording', session, saved: null, stoppedAtLimit: false })
-  sample()
+// ── Saved recordings (browser storage) ─────────────────────────────────────
+
+export function loadSessions() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    const list = raw ? JSON.parse(raw) : []
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
 }
 
-export function stop(atLimit = false) {
-  if (state.status !== 'recording') return
-  const { session } = state
-  session.endedAt = timeAt(session, session.length)
-  set({ status: 'stopped', saved: saveSession(session), stoppedAtLimit: atLimit })
+function writeSessions(list) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(list))
 }
 
-// Leave a finished recording and go back to the live view.
-export function showLive() {
-  if (state.status === 'stopped') set({ status: 'idle', session: null, saved: null })
+// Newest first. When storage is full, the oldest recordings make room.
+// Returns false if even the new recording alone does not fit.
+export function saveSession(session) {
+  const list = [session, ...loadSessions().filter(s => s.id !== session.id)]
+  while (list.length) {
+    try {
+      writeSessions(list)
+      return true
+    } catch {
+      if (list.length === 1) return false
+      list.pop()
+    }
+  }
+  return false
 }
 
-export function setSpeed(speed) {
-  anchor = { wall: performance.now(), sim: simTarget() }
-  set({ speed })
+export function deleteSession(id) {
+  try {
+    writeSessions(loadSessions().filter(s => s.id !== id))
+  } catch {
+    // Nothing to recover: the list stays as it was.
+  }
 }
 
-if (typeof window !== 'undefined') {
-  window.addEventListener('pagehide', () => stop())
-}
-
-function subscribe(listener) {
-  if (!timer) boot()
-  listeners.add(listener)
-  return () => listeners.delete(listener)
-}
-
-export function useRecorder() {
-  return useSyncExternalStore(subscribe, () => state)
+export function findSession(id) {
+  return loadSessions().find(s => s.id === id) ?? null
 }

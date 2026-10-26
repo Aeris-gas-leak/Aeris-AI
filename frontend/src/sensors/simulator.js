@@ -1,158 +1,172 @@
-import { ROOMS } from './rooms.js'
+import { useSyncExternalStore } from 'react'
+import { METRICS, ROOMS, addRoom as appendRoom } from './rooms.js'
+import { createSimulator } from './simulator.js'
+import { createLevelTracker, newSession, saveSession, timeAt } from './sessions.js'
 
-// Stands in for the Raspberry Pi until it is connected. Each call to step()
-// returns one reading per room, rounded like the Pi's CSV rows
-// (timestamp, temperature_C, humidity_%, pressure_hPa, ozone_ratio, co2_ppm).
-//
-// The model, per room:
-//   temperature = baseline + thermostat cycle + slow drift + heat event + noise
-//   humidity    = baseline + slow drift - (temperature rise × 2.8) + moisture event + noise
-//   pressure    = building pressure (weather) + room offset + air-handling jitter + noise
-//   ozone       = clean-air ratio 1.0 + slow drift + ozone event + noise   (MQ-131 Rs/R0)
-//   co2         = room baseline + occupancy cycle + slow drift + gas event + noise
-// Heat events stand for a machine run or a cooling fault; moisture events for a
-// loading-dock door or a wash-down; ozone and CO2 events for a gas release
-// or poor ventilation. All arrive at random and ease in and out.
+// One feed for the whole app. Readings arrive every second from the moment
+// the app opens; the last few minutes are kept for the live charts, and
+// Start recording also captures them into a session. Arrays are filled in
+// place; `version` changes on every tick so React knows to redraw.
 
-const HUMIDITY_PER_DEGREE = 2.8
-const DROPOUT_CHANCE = 0.002
+export const SPEEDS = [1, 10, 60]
+export const MAX_SECONDS = 2 * 60 * 60
+export const PREVIEW_SECONDS = 300
+const TICK_MS = 250
+const MAX_CATCH_UP = 3600
 
-function gaussian() {
-  let u = 0
-  while (u === 0) u = Math.random()
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random())
+let state = {
+  status: 'idle',
+  latest: {},
+  preview: null,
+  session: null,
+  speed: 1,
+  saved: null,
+  stoppedAtLimit: false,
+  version: 0,
 }
 
-function uniform(min, max) {
-  return min + Math.random() * (max - min)
+const listeners = new Set()
+let timer = null
+let sim = null
+let track = null
+let clock = 0
+let bootedAt = 0
+let anchor = { wall: 0, sim: 0 }
+
+function set(patch) {
+  state = { ...state, ...patch, version: state.version + 1 }
+  for (const l of listeners) l()
 }
 
-// Mean-reverting random walk (Ornstein–Uhlenbeck), exact update for step dt.
-function drift(x, dt, tau, sd) {
-  const a = Math.exp(-dt / tau)
-  return x * a + sd * Math.sqrt(1 - a * a) * gaussian()
+function simTarget() {
+  return anchor.sim + (performance.now() - anchor.wall) / 1000 * state.speed
 }
 
-function round(x, digits = 2) {
-  const f = 10 ** digits
-  return Math.round(x * f) / f
+function nowMs() {
+  return bootedAt + clock * 1000
 }
 
-const EVENT_SHAPES = {
-  heat:     { amp: [2.2, 5.0], rise: [120, 300], hold: [180, 600], fall: [300, 600] },
-  moisture: { amp: [6, 14],    rise: [30, 90],   hold: [120, 420], fall: [240, 480] },
-  ozone:    { amp: [0.4, 1.3],  rise: [20, 60],   hold: [60, 300],  fall: [120, 300] },
-  co2:      { amp: [450, 1700], rise: [60, 180],  hold: [120, 480], fall: [300, 600] },
-}
-
-const EVENT_KINDS = Object.keys(EVENT_SHAPES)
-
-function newEvent(kind) {
-  const s = EVENT_SHAPES[kind]
-  const rise = uniform(...s.rise)
-  return {
-    amp: uniform(...s.amp),
-    rise,
-    holdLeft: rise * 2 + uniform(...s.hold),
-    fall: uniform(...s.fall),
+function ensureRoomInPreview(roomId) {
+  if (!state.preview) return
+  if (!state.preview.rooms[roomId]) {
+    state.preview.rooms[roomId] = Object.fromEntries(METRICS.map(m => [m.key, Array(state.preview.length).fill(null)]))
   }
 }
 
-function advanceEvent(state, kind, dt) {
-  const ev = state.events[kind]
-  if (!ev) return
-  const target = ev.holdLeft > 0 ? ev.amp : 0
-  const tau = ev.holdLeft > 0 ? ev.rise : ev.fall
-  state.offsets[kind] += (target - state.offsets[kind]) * (1 - Math.exp(-dt / tau))
-  ev.holdLeft -= dt
-  if (ev.holdLeft <= 0 && Math.abs(state.offsets[kind]) < 0.02) {
-    state.events[kind] = null
-    state.offsets[kind] = 0
+function ensureRoomInSession(roomId) {
+  if (!state.session) return
+  if (!state.session.rooms[roomId]) {
+    state.session.rooms[roomId] = Object.fromEntries(METRICS.map(m => [m.key, Array(state.session.length).fill(null)]))
   }
 }
 
-function newRoomState(room) {
-  return {
-    room,
-    cyclePeriod: uniform(900, 1320),
-    cyclePhase: uniform(0, 2 * Math.PI),
-    tempDrift: gaussian() * 0.25,
-    humDrift: gaussian() * 1.0,
-    airJitter: 0,
-    ozoneDrift: 0,
-    co2Drift: gaussian() * 40,
-    offsets: { heat: 0, moisture: 0, ozone: 0, co2: 0 },
-    events: { heat: null, moisture: null, ozone: null, co2: null },
-  }
+export function addRoom(roomConfig) {
+  const room = appendRoom(roomConfig)
+  if (sim && typeof sim.addRoom === 'function') sim.addRoom(room)
+  ensureRoomInPreview(room.id)
+  ensureRoomInSession(room.id)
+  if (!state.latest[room.id]) state.latest[room.id] = null
+  set({})
+  return room
 }
 
-export function createSimulator() {
-  let clock = 0
-  const weather = {
-    pressure: 1013.2 + gaussian() * 1.2,
-    trendPerHour: uniform(-0.4, 0.4),
-  }
-  const rooms = ROOMS.map(newRoomState)
-
-  function advance(dt) {
-    clock += dt
-    weather.pressure = 1013.2 + drift(weather.pressure - 1013.2, dt, 6 * 3600, 1.5)
-      + weather.trendPerHour * dt / 3600
-
-    for (const s of rooms) {
-      s.tempDrift = drift(s.tempDrift, dt, 600, 0.25)
-      s.humDrift = drift(s.humDrift, dt, 480, 1.0)
-      s.airJitter = drift(s.airJitter, dt, 30, 0.04)
-      s.ozoneDrift = drift(s.ozoneDrift, dt, 300, 0.03)
-      s.co2Drift = drift(s.co2Drift, dt, 900, 40)
-
-      for (const kind of EVENT_KINDS) {
-        const perHour = s.room[`${kind}PerHour`]
-        if (!s.events[kind] && Math.random() < perHour * dt / 3600) {
-          s.events[kind] = newEvent(kind)
-        }
-        advanceEvent(s, kind, dt)
-      }
+function pushPreview(preview, readings) {
+  const full = preview.length >= PREVIEW_SECONDS
+  for (const r of ROOMS) {
+    ensureRoomInPreview(r.id)
+    for (const m of METRICS) {
+      const values = preview.rooms[r.id][m.key]
+      values.push(readings[r.id] ? readings[r.id][m.key] : null)
+      if (full) values.shift()
     }
   }
+  if (full) preview.startedAt += 1000
+  else preview.length++
+}
 
-  function read(s) {
-    if (Math.random() < DROPOUT_CHANCE) return null
-    const r = s.room
-    const cycle = 0.25 * Math.sin(2 * Math.PI * clock / s.cyclePeriod + s.cyclePhase)
-    const tempRise = cycle + s.tempDrift + s.offsets.heat
-    const temperature = r.temperature + tempRise + gaussian() * 0.02
-    const humidity = r.humidity + s.humDrift - tempRise * HUMIDITY_PER_DEGREE
-      + s.offsets.moisture + gaussian() * 0.12
-    const pressure = weather.pressure + r.pressureOffset + s.airJitter + gaussian() * 0.02
-    const ozone = 1 + s.ozoneDrift + s.offsets.ozone + gaussian() * 0.01
-    const occupancy = 60 * Math.sin(2 * Math.PI * clock / 3600 + s.cyclePhase)
-    const co2 = r.co2 + occupancy + s.co2Drift + s.offsets.co2 + gaussian() * 8
-    return {
-      temperature: round(temperature),
-      humidity: round(Math.min(98, Math.max(5, humidity))),
-      pressure: round(pressure),
-      ozone: round(Math.max(0.8, ozone), 3),
-      co2: round(Math.max(400, co2), 1),
+function pushSession(session, readings) {
+  const i = session.length
+  for (const r of ROOMS) {
+    ensureRoomInSession(r.id)
+    const reading = readings[r.id]
+    for (const m of METRICS) {
+      const value = reading ? reading[m.key] : null
+      session.rooms[r.id][m.key].push(value)
+      const event = track(r.id, m, value, i)
+      if (event) session.events.push(event)
     }
   }
+  session.length = i + 1
+}
 
-  // The floor has been running before anyone presses Record: settle the
-  // drifts, and sometimes join while an event is already under way.
-  const warmup = uniform(600, 2400)
-  for (let t = 0; t < warmup; t += 5) advance(5)
-  if (Math.random() < 0.6) {
-    const s = rooms[Math.floor(Math.random() * rooms.length)]
-    const kind = EVENT_KINDS.reduce((a, b) => (s.room[`${b}PerHour`] > s.room[`${a}PerHour`] ? b : a))
-    if (!s.events[kind]) s.events[kind] = newEvent(kind)
-  }
+function sample() {
+  const readings = sim.step(1)
+  clock++
+  for (const r of ROOMS) if (readings[r.id]) state.latest[r.id] = readings[r.id]
+  pushPreview(state.preview, readings)
+  if (state.status === 'recording') pushSession(state.session, readings)
+}
 
-  return {
-    step(dt = 1) {
-      advance(dt)
-      const out = {}
-      for (const s of rooms) out[s.room.id] = read(s)
-      return out
-    },
+function tick() {
+  const target = Math.min(simTarget(), clock + MAX_CATCH_UP)
+  while (clock < target) {
+    sample()
+    if (state.status === 'recording' && state.session.length >= MAX_SECONDS) {
+      stop(true)
+      return
+    }
   }
+  set({})
+}
+
+function boot() {
+  sim = createSimulator()
+  clock = 0
+  bootedAt = Date.now()
+  anchor = { wall: performance.now(), sim: 0 }
+  const preview = newSession()
+  preview.startedAt = bootedAt
+  state = { ...state, preview }
+  sample()
+  timer = setInterval(tick, TICK_MS)
+}
+
+export function start() {
+  if (state.status === 'recording') return
+  track = createLevelTracker()
+  const session = newSession()
+  session.startedAt = nowMs()
+  set({ status: 'recording', session, saved: null, stoppedAtLimit: false })
+  sample()
+}
+
+export function stop(atLimit = false) {
+  if (state.status !== 'recording') return
+  const { session } = state
+  session.endedAt = timeAt(session, session.length)
+  set({ status: 'stopped', saved: saveSession(session), stoppedAtLimit: atLimit })
+}
+
+// Leave a finished recording and go back to the live view.
+export function showLive() {
+  if (state.status === 'stopped') set({ status: 'idle', session: null, saved: null })
+}
+
+export function setSpeed(speed) {
+  anchor = { wall: performance.now(), sim: simTarget() }
+  set({ speed })
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => stop())
+}
+
+function subscribe(listener) {
+  if (!timer) boot()
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+export function useRecorder() {
+  return useSyncExternalStore(subscribe, () => state)
 }
