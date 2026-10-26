@@ -1,161 +1,241 @@
-import { ROOMS } from '../sensors/rooms.js'
+import { useState } from 'react'
+import { Link } from 'react-router-dom'
+import PhoneShell from '../components/PhoneShell.jsx'
+import {
+  SPEEDS, setSpeed, showLive, start, stop, useRecorder,
+} from '../sensors/recorder.js'
+import { downloadCsv, durationSeconds, loadSessions } from '../sensors/sessions.js'
+import { METRICS, METRIC_BY_KEY, ROOMS, levelFor } from '../sensors/rooms.js'
+import { DOT_FOR_LEVEL, SENSOR_COUNT, activeAlerts, withUnit } from '../sensors/display.js'
+import { formatCount, formatDate, formatDuration, plural } from '../format.js'
 
-// Stands in for the Raspberry Pi until it is connected. Each call to step()
-// returns one reading per room, rounded like the Pi's CSV rows
-// (timestamp, temperature_C, humidity_%, pressure_hPa, ozone_ratio, co2_ppm).
-//
-// The model, per room:
-//   temperature = baseline + thermostat cycle + slow drift + heat event + noise
-//   humidity    = baseline + slow drift - (temperature rise × 2.8) + moisture event + noise
-//   pressure    = building pressure (weather) + room offset + air-handling jitter + noise
-//   ozone       = clean-air ratio 1.0 + slow drift + ozone event + noise   (MQ-131 Rs/R0)
-//   co2         = room baseline + occupancy cycle + slow drift + gas event + noise
-// Heat events stand for a machine run or a cooling fault; moisture events for a
-// loading-dock door or a wash-down; ozone and CO2 events for a gas release
-// or poor ventilation. All arrive at random and ease in and out.
-
-const HUMIDITY_PER_DEGREE = 2.8
-const DROPOUT_CHANCE = 0.002
-
-function gaussian() {
-  let u = 0
-  while (u === 0) u = Math.random()
-  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * Math.random())
+// Draws the last few minutes of a per-second count, scaled to its own range.
+function Sparkline({ values, color }) {
+  const w = 44, h = 22
+  if (values.length < 2) return null
+  const step = Math.max(1, Math.floor(values.length / 12))
+  const pts = []
+  for (let i = 0; i < values.length; i += step) pts.push(values[i])
+  pts.push(values.at(-1))
+  const lo = Math.min(...pts), hi = Math.max(...pts)
+  const y = v => (hi === lo ? h / 2 : h - 4 - ((v - lo) / (hi - lo)) * (h - 8))
+  const points = pts.map((v, i) => `${(i / (pts.length - 1)) * w},${y(v).toFixed(1)}`).join(' ')
+  return (
+    <svg className="sparkline" width={w} height={h} viewBox={`0 0 ${w} ${h}`} fill="none" aria-hidden="true">
+      <polyline points={points} stroke={color} strokeWidth="1.8" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+    </svg>
+  )
 }
 
-function uniform(min, max) {
-  return min + Math.random() * (max - min)
-}
-
-// Mean-reverting random walk (Ornstein–Uhlenbeck), exact update for step dt.
-function drift(x, dt, tau, sd) {
-  const a = Math.exp(-dt / tau)
-  return x * a + sd * Math.sqrt(1 - a * a) * gaussian()
-}
-
-function round(x, digits = 2) {
-  const f = 10 ** digits
-  return Math.round(x * f) / f
-}
-
-const EVENT_SHAPES = {
-  heat:     { amp: [2.2, 5.0], rise: [120, 300], hold: [180, 600], fall: [300, 600] },
-  moisture: { amp: [6, 14],    rise: [30, 90],   hold: [120, 420], fall: [240, 480] },
-  ozone:    { amp: [0.4, 1.3],  rise: [20, 60],   hold: [60, 300],  fall: [120, 300] },
-  co2:      { amp: [450, 1700], rise: [60, 180],  hold: [120, 480], fall: [300, 600] },
-}
-
-const EVENT_KINDS = Object.keys(EVENT_SHAPES)
-
-function newEvent(kind) {
-  const s = EVENT_SHAPES[kind]
-  const rise = uniform(...s.rise)
-  return {
-    amp: uniform(...s.amp),
-    rise,
-    holdLeft: rise * 2 + uniform(...s.hold),
-    fall: uniform(...s.fall),
-  }
-}
-
-function advanceEvent(state, kind, dt) {
-  const ev = state.events[kind]
-  if (!ev) return
-  const target = ev.holdLeft > 0 ? ev.amp : 0
-  const tau = ev.holdLeft > 0 ? ev.rise : ev.fall
-  state.offsets[kind] += (target - state.offsets[kind]) * (1 - Math.exp(-dt / tau))
-  ev.holdLeft -= dt
-  if (ev.holdLeft <= 0 && Math.abs(state.offsets[kind]) < 0.02) {
-    state.events[kind] = null
-    state.offsets[kind] = 0
-  }
-}
-
-function newRoomState(room) {
-  return {
-    room,
-    cyclePeriod: uniform(900, 1320),
-    cyclePhase: uniform(0, 2 * Math.PI),
-    tempDrift: gaussian() * 0.25,
-    humDrift: gaussian() * 1.0,
-    airJitter: 0,
-    ozoneDrift: 0,
-    co2Drift: gaussian() * 40,
-    offsets: { heat: 0, moisture: 0, ozone: 0, co2: 0 },
-    events: { heat: null, moisture: null, ozone: null, co2: null },
-  }
-}
-
-export function createSimulator() {
-  let clock = 0
-  const weather = {
-    pressure: 1013.2 + gaussian() * 1.2,
-    trendPerHour: uniform(-0.4, 0.4),
-  }
-  const rooms = ROOMS.map(newRoomState)
-
-  function advance(dt) {
-    clock += dt
-    weather.pressure = 1013.2 + drift(weather.pressure - 1013.2, dt, 6 * 3600, 1.5)
-      + weather.trendPerHour * dt / 3600
-
-    for (const s of rooms) {
-      s.tempDrift = drift(s.tempDrift, dt, 600, 0.25)
-      s.humDrift = drift(s.humDrift, dt, 480, 1.0)
-      s.airJitter = drift(s.airJitter, dt, 30, 0.04)
-      s.ozoneDrift = drift(s.ozoneDrift, dt, 300, 0.03)
-      s.co2Drift = drift(s.co2Drift, dt, 900, 40)
-
-      for (const kind of EVENT_KINDS) {
-        const perHour = s.room[`${kind}PerHour`]
-        if (!s.events[kind] && Math.random() < perHour * dt / 3600) {
-          s.events[kind] = newEvent(kind)
-        }
-        advanceEvent(s, kind, dt)
-      }
+// Per-second history from the live buffer: sensors reporting and readings
+// at or over a warning level.
+function history(preview) {
+  const reporting = [], alerts = []
+  for (let i = 0; i < preview.length; i++) {
+    let up = 0, over = 0
+    for (const r of ROOMS) {
+      const room = preview.rooms[r.id]
+      if (room.temperature[i] == null) continue
+      up += METRICS.length
+      for (const m of METRICS) if (levelFor(m, room[m.key][i]) !== 'normal') over++
     }
+    reporting.push(up)
+    alerts.push(over)
   }
+  return { reporting, alerts }
+}
 
-  function read(s) {
-    if (Math.random() < DROPOUT_CHANCE) return null
-    const r = s.room
-    const cycle = 0.25 * Math.sin(2 * Math.PI * clock / s.cyclePeriod + s.cyclePhase)
-    const tempRise = cycle + s.tempDrift + s.offsets.heat
-    const temperature = r.temperature + tempRise + gaussian() * 0.02
-    const humidity = r.humidity + s.humDrift - tempRise * HUMIDITY_PER_DEGREE
-      + s.offsets.moisture + gaussian() * 0.12
-    const pressure = weather.pressure + r.pressureOffset + s.airJitter + gaussian() * 0.02
-    const ozone = 1 + s.ozoneDrift + s.offsets.ozone + gaussian() * 0.01
-    const occupancy = 60 * Math.sin(2 * Math.PI * clock / 3600 + s.cyclePhase)
-    const co2 = r.co2 + occupancy + s.co2Drift + s.offsets.co2 + gaussian() * 8
-    return {
-      temperature: round(temperature),
-      humidity: round(Math.min(98, Math.max(5, humidity))),
-      pressure: round(pressure),
-      ozone: round(Math.max(0.8, ozone), 3),
-      co2: round(Math.max(400, co2), 1),
-    }
-  }
+function RecordButton({ status, session }) {
+  const recording = status === 'recording'
+  return (
+    <button
+      type="button"
+      className={`rec-btn${recording ? ' is-recording' : ''}`}
+      onClick={() => (recording ? stop() : start())}
+    >
+      {recording ? <span className="rec-square"></span> : <span className="rec-dot"></span>}
+      <span>{recording ? `Stop ${formatDuration(durationSeconds(session))}` : 'Record'}</span>
+    </button>
+  )
+}
 
-  // The floor has been running before anyone presses Record: settle the
-  // drifts, and sometimes join while an event is already under way.
-  const warmup = uniform(600, 2400)
-  for (let t = 0; t < warmup; t += 5) advance(5)
-  if (Math.random() < 0.6) {
-    const s = rooms[Math.floor(Math.random() * rooms.length)]
-    const kind = EVENT_KINDS.reduce((a, b) => (s.room[`${b}PerHour`] > s.room[`${a}PerHour`] ? b : a))
-    if (!s.events[kind]) s.events[kind] = newEvent(kind)
+function RecordingStatus({ status, session, speed, saved }) {
+  if (status === 'stopped') {
+    return (
+      <div className="rec-status">
+        <p>
+          {saved ? 'Recording saved' : 'Recording too large to keep in this browser'} ({formatDuration(durationSeconds(session))}).
+        </p>
+        <div className="rec-status-actions">
+          {saved && <Link to={`/recordings/${session.id}`}>View recording</Link>}
+          <button type="button" onClick={() => downloadCsv(session)}>Download CSV</button>
+          <button type="button" onClick={showLive}>Back to live</button>
+        </div>
+      </div>
+    )
   }
+  return (
+    <div className="rec-status">
+      <p>
+        {status === 'recording'
+          ? `${formatCount(session.length * SENSOR_COUNT)} readings · ${plural(session.events.length, 'threshold event')}`
+          : 'Live readings. Press Record to keep them.'}
+      </p>
+      <div className="speed-row" role="radiogroup" aria-label="Speed">
+        {SPEEDS.map(s => (
+          <button
+            key={s}
+            type="button"
+            role="radio"
+            aria-checked={s === speed}
+            className={s === speed ? 'is-active' : undefined}
+            onClick={() => setSpeed(s)}
+          >
+            {s}×
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
-  return {
-    step(dt = 1) {
-      advance(dt)
-      const out = {}
-      for (const s of rooms) out[s.room.id] = read(s)
-      return out
-    },
-    addRoom(room) {
-      rooms.push(newRoomState(room))
-    },
-  }
+export default function Dashboard() {
+  const recorder = useRecorder()
+  const { status, session, latest, preview } = recorder
+  const [recent] = useState(() => loadSessions().slice(0, 3))
+
+  if (!preview) return null
+
+  const { reporting, alerts } = history(preview)
+  const now = activeAlerts(latest)
+  const dangerNow = now.filter(a => a.level === 'danger').length
+  const received = reporting.reduce((a, b) => a + b, 0)
+  const health = reporting.length ? (received / (reporting.length * SENSOR_COUNT)) * 100 : 100
+  const recordings = status === 'stopped' && recorder.saved
+    ? [session, ...recent.filter(s => s.id !== session.id)].slice(0, 3)
+    : recent
+
+  return (
+    <PhoneShell recordingBar={false}>
+      <div className="top-row">
+        <div className="brand-row">
+          <div className="brand-avatar">M</div>
+          <span className="brand-name">AERIS.AI</span>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <RecordButton status={status} session={session} />
+          <Link className="bell-btn" to="/alerts" aria-label={`Alerts, ${now.length} active`}>
+            🔔
+            {now.length > 0 && <span className="bell-count">{now.length}</span>}
+          </Link>
+        </div>
+      </div>
+
+      <RecordingStatus {...recorder} />
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span className="section-label">Statistics</span>
+        <span className="section-label">{status === 'recording' ? 'This recording' : 'Last 5 min'}</span>
+      </div>
+
+      <div className="stats-grid">
+        <div className="stat-card">
+          <span className="stat-label">Active Sensors</span>
+          <div className="stat-row">
+            <span className="stat-value">{reporting.at(-1) ?? 0}</span>
+            <span className="stat-trend up">of {SENSOR_COUNT}
+              <Sparkline values={reporting} color="#3ddc84" />
+            </span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">System Health</span>
+          <div className="stat-row">
+            <span className="stat-value">{health >= 99.95 ? '100' : health.toFixed(1)}%</span>
+            <span className={`stat-trend ${health >= 99 ? 'up' : 'down'}`}>
+              <Sparkline values={reporting} color={health >= 99 ? '#3ddc84' : '#ff5c2e'} />
+            </span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Active Alerts</span>
+          <div className="stat-row">
+            <span className="stat-value">{now.length}</span>
+            <span className={`stat-trend ${now.length ? 'down' : 'up'}`}>{dangerNow > 0 && `${dangerNow} danger`}
+              <Sparkline values={alerts} color={now.length ? '#ff5c2e' : '#3ddc84'} />
+            </span>
+          </div>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Threshold Events</span>
+          <div className="stat-row">
+            <span className="stat-value">{session ? session.events.length : 0}</span>
+            <span className="stat-trend up">{session ? formatDuration(durationSeconds(session)) : 'Not recording'}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="section-header">
+        <span className="section-title">Factory Map View</span>
+        <Link className="view-all" to="/immediate">View all</Link>
+      </div>
+
+      <div className="map-panel">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span className="floor-label">Floor #01</span>
+          <div className="map-legend">
+            <div className="legend-item"><span className="dot green"></span>Normal</div>
+            <div className="legend-item"><span className="dot yellow"></span>Warning</div>
+            <div className="legend-item"><span className="dot red"></span>Active Leak</div>
+          </div>
+        </div>
+        <div className="rooms-grid">
+          {ROOMS.map(room => {
+            const reading = latest[room.id]
+            return (
+              <Link
+                to={`/room/${encodeURIComponent(room.id)}`}
+                className="room-mini"
+                key={room.id}
+                style={{ textDecoration: 'none', color: 'inherit', transition: 'all 0.2s ease', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                  <span style={{ fontWeight: 600, color: 'var(--text)', fontSize: '13px' }}>{room.id}</span>
+                  <span style={{ fontSize: '14px', color: 'var(--muted)' }}>→</span>
+                </div>
+                <span className="room-mini-reading">
+                  {reading ? `${withUnit(METRIC_BY_KEY.temperature, reading.temperature)} · ${withUnit(METRIC_BY_KEY.co2, reading.co2)}` : 'Waiting for sensor'}
+                </span>
+                <div className="room-dots-field" style={{ marginTop: 'auto' }}>
+                  {METRICS.map(m => {
+                    const level = reading ? levelFor(m, reading[m.key]) : 'normal'
+                    return <span key={m.key} className={`dot ${DOT_FOR_LEVEL[level]}`} title={`${m.label}: ${withUnit(m, reading?.[m.key])}`}></span>
+                  })}
+                </div>
+              </Link>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="floor-row">Floor #02</div>
+      <div className="floor-row">Floor #03</div>
+
+      <div className="section-header">
+        <span className="section-title">Recordings</span>
+        <Link className="view-all" to="/recordings">View all</Link>
+      </div>
+      {recordings.length ? (
+        <div className="room-link-row">
+          {recordings.map(s => (
+            <Link key={s.id} className="room-link-btn" to={`/recordings/${s.id}`}>
+              {formatDate(s.startedAt)} · {formatDuration(durationSeconds(s))} <span>→</span>
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <div className="floor-row">No recordings yet. Press Record to start one.</div>
+      )}
+    </PhoneShell>
+  )
 }
