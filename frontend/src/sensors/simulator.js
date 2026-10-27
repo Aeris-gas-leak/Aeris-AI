@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { METRICS, ROOMS, addRoom as appendRoom } from './rooms.js'
-import { createSimulator } from './simulator.js'
-import { createLevelTracker, newSession, saveSession, timeAt } from './sessions.js'
+import { createLevelTracker, newSession, saveSession, timeAt } from './recorder.js'
 
 // One feed for the whole app. Readings arrive every second from the moment
 // the app opens; the last few minutes are kept for the live charts, and
@@ -13,6 +12,86 @@ export const MAX_SECONDS = 2 * 60 * 60
 export const PREVIEW_SECONDS = 300
 const TICK_MS = 250
 const MAX_CATCH_UP = 3600
+
+// ── Physics simulator ────────────────────────────────────────────────────────
+// Produces per-second sensor readings for every room using the baselines and
+// drift rates defined on each room object. Readings wander around their
+// baseline with small random noise and slow sinusoidal drift.
+function createSimulator() {
+  // Per-room mutable state
+  const roomState = {}
+  for (const r of ROOMS) {
+    roomState[r.id] = {
+      temperature: r.temperature,
+      humidity:    r.humidity,
+      pressure:    1013.25 + (r.pressureOffset ?? 0),
+      ozone:       1.0,
+      co2:         r.co2,
+      elapsed:     0,
+    }
+  }
+
+  function addRoom(room) {
+    if (!roomState[room.id]) {
+      roomState[room.id] = {
+        temperature: room.temperature ?? 24.0,
+        humidity:    room.humidity ?? 50,
+        pressure:    1013.25 + (room.pressureOffset ?? 0),
+        ozone:       1.0,
+        co2:         room.co2 ?? 520,
+        elapsed:     0,
+      }
+    }
+  }
+
+  function rand(scale) {
+    return (Math.random() - 0.5) * 2 * scale
+  }
+
+  function step(seconds) {
+    const readings = {}
+    for (const r of ROOMS) {
+      const s = roomState[r.id]
+      if (!s) continue
+      s.elapsed += seconds
+
+      // Slow drift + noise
+      const hourFraction = seconds / 3600
+      s.temperature += r.heatPerHour    * hourFraction + rand(0.03)
+      s.humidity    += r.moisturePerHour * hourFraction + rand(0.15)
+      s.ozone       += r.ozonePerHour    * hourFraction + rand(0.01)
+      s.co2         += r.co2PerHour      * hourFraction + rand(2)
+      s.pressure    += rand(0.05)
+
+      // Gentle mean-reversion so values don't drift unboundedly
+      s.temperature += (r.temperature - s.temperature) * 0.002
+      s.humidity    += (r.humidity    - s.humidity)    * 0.002
+      s.ozone       += (1.0           - s.ozone)       * 0.001
+      s.co2         += (r.co2         - s.co2)         * 0.001
+      s.pressure    += (1013.25 + (r.pressureOffset ?? 0) - s.pressure) * 0.002
+
+      // Clamp to physically reasonable ranges
+      s.temperature = Math.max(15, Math.min(40, s.temperature))
+      s.humidity    = Math.max(10, Math.min(95, s.humidity))
+      s.ozone       = Math.max(0.5, Math.min(3.5, s.ozone))
+      s.co2         = Math.max(300, Math.min(5000, s.co2))
+      s.pressure    = Math.max(970, Math.min(1050, s.pressure))
+
+      readings[r.id] = {
+        temperature: parseFloat(s.temperature.toFixed(2)),
+        humidity:    parseFloat(s.humidity.toFixed(2)),
+        pressure:    parseFloat(s.pressure.toFixed(2)),
+        ozone:       parseFloat(s.ozone.toFixed(3)),
+        co2:         parseFloat(s.co2.toFixed(1)),
+      }
+    }
+    return readings
+  }
+
+  return { step, addRoom }
+}
+
+// ── Recorder state ───────────────────────────────────────────────────────────
 
 let state = {
   status: 'idle',

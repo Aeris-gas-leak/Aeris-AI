@@ -131,3 +131,18 @@ export function formatValue(metric, value) {
   if (value == null) return '–'
   return value.toFixed(metric.decimals)
 }
+
+// ── Re-exports so pages that import from sessions.js still work ──────────────
+// Pages import { durationSeconds, downloadCsv, loadSessions, findSession,
+// timeAt, deleteSession } from './sessions.js' but those live in recorder.js.
+export {
+  durationSeconds,
+  downloadCsv,
+  loadSessions,
+  saveSession,
+  deleteSession,
+  findSession,
+  timeAt,
+  newSession,
+  createLevelTracker,
+} from './recorder.js'
