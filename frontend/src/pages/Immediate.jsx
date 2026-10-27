@@ -3,11 +3,12 @@ import PhoneShell from '../components/PhoneShell.jsx'
 import BackHeader from '../components/BackHeader.jsx'
 import ChartBlock from '../components/ChartBlock.jsx'
 import { useRecorder } from '../sensors/recorder.js'
-import { METRICS, ROOMS } from '../sensors/rooms.js'
+import { METRICS, ROOMS, useRoomNames } from '../sensors/rooms.js'
 import { METRIC_STYLE, ROOM_COLORS } from '../sensors/display.js'
 
 export default function Immediate() {
   const { session, preview } = useRecorder()
+  const roomNames = useRoomNames()
   if (!preview) return null
   const series = session ?? preview
 
@@ -22,7 +23,7 @@ export default function Immediate() {
           emoji={METRIC_STYLE[m.key].emoji}
           metric={m}
           session={series}
-          series={ROOMS.map(r => ({ label: r.id, color: ROOM_COLORS[r.id], values: series.rooms[r.id][m.key] }))}
+          series={ROOMS.map(r => ({ label: roomNames[r.id] ?? r.id, color: ROOM_COLORS[r.id], values: series.rooms[r.id][m.key] }))}
         />
       ))}
 
@@ -32,7 +33,7 @@ export default function Immediate() {
       <div className="room-link-row">
         {ROOMS.map(r => (
           <Link key={r.id} className="room-link-btn" to={`/room/${encodeURIComponent(r.id)}`}>
-            {r.id} <span>→</span>
+            {roomNames[r.id] ?? r.id} <span>→</span>
           </Link>
         ))}
       </div>

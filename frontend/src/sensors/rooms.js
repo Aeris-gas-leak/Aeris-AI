@@ -1,3 +1,5 @@
+import { useState, useEffect } from 'react'
+
 // Keep these in sync with THRESHOLDS in app.py so simulated and Pi data
 // are judged the same way.
 export const METRICS = [
@@ -95,6 +97,41 @@ export const ROOMS = [
 ]
 
 export const ROOM_BY_ID = Object.fromEntries(ROOMS.map(r => [r.id, r]))
+
+// ── Room rename helpers (persisted in localStorage) ─────────────────────────
+const LS_KEY = 'aeris_room_names'
+
+function loadRoomNames() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)) ?? {} } catch { return {} }
+}
+
+/** Returns the display name for a room id (falls back to the id itself). */
+export function getRoomName(id) {
+  return loadRoomNames()[id] ?? id
+}
+
+/** Persist a new display name for a room id. Pass null/'' to reset to default. */
+export function setRoomName(id, name) {
+  const map = loadRoomNames()
+  if (name && name.trim() && name.trim() !== id) {
+    map[id] = name.trim()
+  } else {
+    delete map[id]
+  }
+  localStorage.setItem(LS_KEY, JSON.stringify(map))
+  window.dispatchEvent(new Event('aeris_room_names'))
+}
+
+/** Hook that re-renders whenever any room name changes. */
+export function useRoomNames() {
+  const [names, setNames] = useState(loadRoomNames)
+  useEffect(() => {
+    const handler = () => setNames(loadRoomNames())
+    window.addEventListener('aeris_room_names', handler)
+    return () => window.removeEventListener('aeris_room_names', handler)
+  }, [])
+  return names
+}
 
 export function levelFor(metric, value) {
   if (value == null) return 'normal'

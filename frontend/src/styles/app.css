@@ -901,3 +901,129 @@ a.home-generate-btn { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
     .hero-orb::before, .hero-orb::after, .hero-ring, .rec-dot { animation: none !important; }
 }
+
+
+/* ── ROOM RENAME ── */
+.room-rename-btn {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 4px;
+    border-radius: 6px;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+}
+
+.room-rename-btn:hover {
+    color: var(--accent-blue);
+    background: rgba(79, 122, 255, 0.1);
+}
+
+/* Modal overlay (Dashboard) */
+.rename-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(4px);
+}
+
+.rename-modal {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 24px 20px 20px;
+    width: min(340px, calc(100vw - 48px));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.rename-modal-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.rename-modal-subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: -6px;
+}
+
+.rename-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 14px;
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    outline: none;
+    transition: border-color 0.15s;
+}
+
+.rename-input:focus {
+    border-color: var(--accent-blue);
+}
+
+.rename-modal-actions,
+.rename-form-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.rename-cancel-btn {
+    background: var(--bg-card2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--muted);
+    padding: 8px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: 'DM Sans', sans-serif;
+    transition: color 0.15s;
+}
+
+.rename-cancel-btn:hover { color: var(--text); }
+
+.rename-save-btn {
+    background: var(--accent-blue);
+    border: none;
+    border-radius: 10px;
+    color: #fff;
+    padding: 8px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: 'DM Sans', sans-serif;
+    transition: opacity 0.15s;
+}
+
+.rename-save-btn:hover { opacity: 0.85; }
+
+/* Inline form on RoomDetail page */
+.room-rename-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.room-rename-form .rename-input {
+    font-size: 16px;
+    padding: 8px 12px;
+}
+
+.rename-form-actions {
+    margin-top: 2px;
+}

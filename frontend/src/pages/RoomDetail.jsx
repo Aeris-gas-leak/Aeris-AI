@@ -1,33 +1,81 @@
+import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import PhoneShell from '../components/PhoneShell.jsx'
 import BackHeader from '../components/BackHeader.jsx'
 import ChartBlock from '../components/ChartBlock.jsx'
 import { useRecorder } from '../sensors/recorder.js'
-import { METRICS, ROOM_BY_ID } from '../sensors/rooms.js'
+import { METRICS, ROOM_BY_ID, useRoomNames, setRoomName } from '../sensors/rooms.js'
 import { METRIC_STYLE, withUnit } from '../sensors/display.js'
 
 const PILL = { idle: 'Live', recording: 'Recording', stopped: 'Saved' }
+
+/** Inline rename form shown in the room header */
+function RenameForm({ roomId, currentName, onDone }) {
+  const [value, setValue] = useState(currentName)
+  const submit = (e) => {
+    e.preventDefault()
+    setRoomName(roomId, value)
+    onDone()
+  }
+  return (
+    <form className="room-rename-form" onSubmit={submit}>
+      <input
+        className="rename-input"
+        autoFocus
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        placeholder={roomId}
+        maxLength={40}
+        aria-label="Room name"
+      />
+      <div className="rename-form-actions">
+        <button type="button" className="rename-cancel-btn" onClick={onDone}>Cancel</button>
+        <button type="submit" className="rename-save-btn">Save</button>
+      </div>
+    </form>
+  )
+}
 
 export default function RoomDetail() {
   const { roomName } = useParams()
   const { status, session, latest, preview } = useRecorder()
   const room = ROOM_BY_ID[roomName]
+  const roomNames = useRoomNames()
+  const [editing, setEditing] = useState(false)
 
   if (!preview) return null
 
   const series = session ?? preview
   const reading = latest[roomName]
   const [temperature, humidity, pressure, ozone, co2] = METRICS
+  const displayName = roomNames[roomName] ?? roomName
 
   return (
     <PhoneShell>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <BackHeader to="/rooms" />
           <div className="sensor-subtitle">{status === 'idle' ? 'Live Sensor Data' : 'Recorded Sensor Data'}</div>
-          <div style={{ fontFamily: "'Syne',sans-serif", fontSize: '22px', fontWeight: 700, color: '#fff', marginTop: '2px' }}>
-            {roomName}
-          </div>
+          {editing ? (
+            <RenameForm
+              roomId={roomName}
+              currentName={displayName}
+              onDone={() => setEditing(false)}
+            />
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+              <div style={{ fontFamily: "'Syne',sans-serif", fontSize: '22px', fontWeight: 700, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {displayName}
+              </div>
+              <button
+                type="button"
+                className="room-rename-btn"
+                title="Rename room"
+                onClick={() => setEditing(true)}
+                aria-label="Rename room"
+              >✎</button>
+            </div>
+          )}
         </div>
         <span className={`active-pill is-${status}`}>{PILL[status]}</span>
       </div>
@@ -55,7 +103,7 @@ export default function RoomDetail() {
               emoji={METRIC_STYLE[m.key].emoji}
               metric={m}
               session={series}
-              series={[{ label: roomName, color: METRIC_STYLE[m.key].color, values: series.rooms[roomName][m.key] }]}
+              series={[{ label: displayName, color: METRIC_STYLE[m.key].color, values: series.rooms[roomName][m.key] }]}
             />
           ))}
         </>

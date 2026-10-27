@@ -5,7 +5,7 @@ import {
   SPEEDS, setSpeed, showLive, start, stop, useRecorder,
 } from '../sensors/recorder.js'
 import { downloadCsv, durationSeconds, loadSessions } from '../sensors/sessions.js'
-import { METRICS, METRIC_BY_KEY, ROOMS, levelFor } from '../sensors/rooms.js'
+import { METRICS, METRIC_BY_KEY, ROOMS, levelFor, useRoomNames, setRoomName } from '../sensors/rooms.js'
 import { DOT_FOR_LEVEL, SENSOR_COUNT, activeAlerts, withUnit } from '../sensors/display.js'
 import { formatCount, formatDate, formatDuration, plural } from '../format.js'
 
@@ -99,10 +99,54 @@ function RecordingStatus({ status, session, speed, saved }) {
   )
 }
 
+/** Inline rename modal overlay */
+function RenameModal({ roomId, initial, onCommit, onCancel }) {
+  const [value, setValue] = useState(initial)
+  const submit = (e) => {
+    e.preventDefault()
+    onCommit(value)
+  }
+  return (
+    <div className="rename-overlay" onClick={onCancel}>
+      <div className="rename-modal" onClick={e => e.stopPropagation()}>
+        <div className="rename-modal-title">Rename Room</div>
+        <div className="rename-modal-subtitle">{roomId}</div>
+        <form onSubmit={submit}>
+          <input
+            className="rename-input"
+            autoFocus
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            placeholder={roomId}
+            maxLength={40}
+          />
+          <div className="rename-modal-actions">
+            <button type="button" className="rename-cancel-btn" onClick={onCancel}>Cancel</button>
+            <button type="submit" className="rename-save-btn">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 export default function Dashboard() {
   const recorder = useRecorder()
   const { status, session, latest, preview } = recorder
   const [recent] = useState(() => loadSessions().slice(0, 3))
+  const roomNames = useRoomNames()
+  const [renaming, setRenaming] = useState(null) // room.id being renamed
+
+  const openRename = (e, roomId) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setRenaming(roomId)
+  }
+  const commitRename = (name) => {
+    if (renaming) setRoomName(renaming, name)
+    setRenaming(null)
+  }
+  const cancelRename = () => setRenaming(null)
 
   if (!preview) return null
 
@@ -117,6 +161,15 @@ export default function Dashboard() {
 
   return (
     <PhoneShell recordingBar={false}>
+      {renaming && (
+        <RenameModal
+          roomId={renaming}
+          initial={roomNames[renaming] ?? renaming}
+          onCommit={commitRename}
+          onCancel={cancelRename}
+        />
+      )}
+
       <div className="top-row">
         <div className="brand-row">
           <div className="brand-avatar">M</div>
@@ -192,6 +245,7 @@ export default function Dashboard() {
         <div className="rooms-grid">
           {ROOMS.map(room => {
             const reading = latest[room.id]
+            const displayName = roomNames[room.id] ?? room.id
             return (
               <Link
                 to={`/room/${encodeURIComponent(room.id)}`}
@@ -200,8 +254,16 @@ export default function Dashboard() {
                 style={{ textDecoration: 'none', color: 'inherit', transition: 'all 0.2s ease', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                  <span style={{ fontWeight: 600, color: 'var(--text)', fontSize: '13px' }}>{room.id}</span>
-                  <span style={{ fontSize: '14px', color: 'var(--muted)' }}>→</span>
+                  <span style={{ fontWeight: 600, color: 'var(--text)', fontSize: '13px', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {displayName}
+                  </span>
+                  <button
+                    type="button"
+                    className="room-rename-btn"
+                    title="Rename room"
+                    onClick={e => openRename(e, room.id)}
+                    aria-label={`Rename ${displayName}`}
+                  >✎</button>
                 </div>
                 <span className="room-mini-reading">
                   {reading ? `${withUnit(METRIC_BY_KEY.temperature, reading.temperature)} · ${withUnit(METRIC_BY_KEY.co2, reading.co2)}` : 'Waiting for sensor'}
